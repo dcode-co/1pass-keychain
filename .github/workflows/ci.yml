@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo fmt --all --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: test
+        run: cargo test --workspace
+      # macOS login keychain and Windows Credential Manager are usable on hosted runners.
+      - name: real keychain round-trip
+        if: matrix.os != 'ubuntu-latest'
+        env:
+          KC_TEST_REAL_STORE: "1"
+        run: cargo test -p kc-store
+
+  linux-secret-service:
+    name: real Secret Service round-trip (gnome-keyring)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y gnome-keyring dbus-x11 libsecret-tools libglib2.0-bin dbus-bin
+      - name: test against an unlocked keyring in a private D-Bus session
+        env:
+          KC_TEST_REAL_STORE: "1"
+        run: |
+          dbus-run-session -- sh -c '
+            printf "ci-keyring" | gnome-keyring-daemon --unlock --components=secrets >/dev/null
+            cargo test -p kc-store
+          '
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  secrets-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks
+        run: |
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.28.0/gitleaks_8.28.0_linux_x64.tar.gz | tar -xz gitleaks
+          ./gitleaks git --redact --no-banner .

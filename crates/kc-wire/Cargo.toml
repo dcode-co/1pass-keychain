@@ -1,0 +1,16 @@
+[package]
+name = "kc-wire"
+description = "1pass keychain relay HTTP contract (frozen): paths, limits, JSON types, error codes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

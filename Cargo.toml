@@ -1,0 +1,36 @@
+[workspace]
+resolver = "3"
+members = ["crates/kc-wire", "crates/kc-proto", "crates/kc-store", "crates/kc-relay", "crates/kc-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+repository = "https://github.com/dcode-co/1pass-keychain"
+homepage = "https://github.com/dcode-co/1pass-keychain"
+authors = ["Dcode <support@1pass.dev>"]
+
+# Shared versions only. Each crate turns on the features it needs with
+# `dep = { workspace = true, features = [...] }`. A lane that needs a crate that
+# isn't listed here may add it to its own Cargo.toml directly.
+[workspace.dependencies]
+kc-wire = { path = "crates/kc-wire" }
+kc-proto = { path = "crates/kc-proto" }
+kc-store = { path = "crates/kc-store" }
+
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+rand = "0.9"
+zeroize = { version = "1.9", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "net", "signal", "sync"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

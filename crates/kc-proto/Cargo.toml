@@ -1,0 +1,38 @@
+[package]
+name = "kc-proto"
+description = "1pass keychain transfer protocol: codes, SPAKE2 pairing, channel and inbox encryption, payloads, relay abstraction (no I/O)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[features]
+default = []
+# `MemoryRelay`: an in-process relay with the real channel/inbox semantics, for tests.
+test-util = []
+
+[dependencies]
+kc-wire.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+base64.workspace = true
+tokio.workspace = true
+
+spake2 = "0.4"
+chacha20poly1305 = { version = "0.11", default-features = false, features = ["zeroize"] }
+hpke = { version = "0.14", default-features = false, features = ["x25519", "chacha", "getrandom"] }
+hmac = { version = "0.13", features = ["zeroize"] }
+sha2 = { version = "0.11", features = ["zeroize"] }
+subtle = "2.6"
+postcard = { version = "1.1", default-features = false, features = ["alloc"] }
+curve25519-dalek = { version = "5", default-features = false }
+getrandom = "0.4"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+serde_json.workspace = true
+# Deterministic RNG for the SPAKE2 golden vector (spake2 0.4 uses rand_core 0.6 traits).
+rand_core_06 = { package = "rand_core", version = "0.6" }

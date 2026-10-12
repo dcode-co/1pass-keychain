@@ -1,0 +1,49 @@
+[package]
+name = "kc-relay"
+description = "1pass keychain relay: short-lived channels and remembered-device inboxes. Stores no secrets."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "kc-relay"
+path = "src/main.rs"
+
+[features]
+# `spawn_test_relay` for end-to-end tests in other crates.
+test-util = []
+
+[dependencies]
+kc-wire.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+rand.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+# No `tracing` feature: axum's rejection logging can echo raw path segments.
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "matched-path"] }
+bytes = "1.9"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio", "server", "server-graceful", "http1"] }
+tower = { version = "0.5", default-features = false, features = ["util"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+sha2 = "0.10"
+hmac = "0.12"
+subtle = "2.6"
+ipnet = "2"
+humantime = "2"
+
+[dev-dependencies]
+kc-relay = { path = ".", features = ["test-util"] }
+tower = { version = "0.5", features = ["util"] }
+tokio = { workspace = true, features = ["test-util", "io-util"] }

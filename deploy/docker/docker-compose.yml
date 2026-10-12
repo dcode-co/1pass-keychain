@@ -1,0 +1,70 @@
+# kc-relay behind an existing reverse proxy (Caddy) that reaches it over a
+# Docker network. No host ports are published.
+#
+# Required settings (environment or a .env file next to this file):
+#   KC_PROXY_NETWORK          existing network shared with the proxy only
+#                             (docker network create --internal <name>)
+#   KC_RELAY_TRUSTED_PROXIES  that network's subnet: only peers inside it may
+#                             set the x-kc-client-ip header
+# Optional:
+#   KC_RELAY_SRC              build context, the repository root (default ./src)
+#   KC_REVISION               commit id, stored as the image's revision label
+#   RUST_LOG                  log filter (default info)
+#
+# From a checkout:  KC_RELAY_SRC=../.. docker compose -f deploy/docker/docker-compose.yml build
+name: kc-relay
+
+services:
+  kc-relay:
+    image: kc-relay:local
+    build:
+      context: ${KC_RELAY_SRC:-./src}
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        KC_REVISION: ${KC_REVISION:-unknown}
+    # A unique name for the proxy's upstream; a generic service name like
+    # `web` could be answered by another stack on a shared network.
+    container_name: kc-relay
+    restart: unless-stopped
+    environment:
+      KC_RELAY_BIND: "0.0.0.0:8080"
+      KC_RELAY_DB: /data/relay.db
+      KC_RELAY_TRUSTED_PROXIES: ${KC_RELAY_TRUSTED_PROXIES:?set to the proxy network subnet}
+      RUST_LOG: ${RUST_LOG:-info}
+    expose:
+      - "8080"
+    networks:
+      - proxy
+    volumes:
+      - relay-data:/data
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp:size=8m,mode=1777,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    memswap_limit: 256m
+    cpus: 0.5
+    pids_limit: 64
+    ulimits:
+      nofile:
+        soft: 8192
+        hard: 8192
+    # Long-polls end at once on SIGTERM; this covers in-flight database work.
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  relay-data:
+
+networks:
+  proxy:
+    name: ${KC_PROXY_NETWORK:?set to the network shared with the reverse proxy}
+    external: true

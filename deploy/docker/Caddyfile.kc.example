@@ -1,0 +1,41 @@
+# kc-relay site block for Caddy 2. Save it next to the main Caddyfile and add
+#
+#     import kc-relay.caddy
+#
+# to the main Caddyfile (or paste the block in). Replace relay.example.com
+# with the relay's hostname. Caddy must share a Docker network with the
+# `kc-relay` container.
+#
+# No `log` directive on purpose: request paths carry inbox ids and channel
+# numbers, which the relay itself never logs. Caddy's runtime error log
+# (`http.log.error`, e.g. when the upstream is restarting) can still record
+# the request URI and client address; filtering that is a global logging
+# option of the proxy, not something this block can do.
+#
+# The relay bounds its own side (body read timeout, write-stall and
+# write-budget limits). Deadlines for slow clients on the public side are
+# server-wide Caddy options (`servers { timeouts { read_body ...  write ... } }`);
+# if you set `write`, leave room for the 25 s long-poll plus the transfer.
+relay.example.com {
+	# Largest body is 256 KiB (a payload or an inbox message).
+	request_body {
+		max_size 300KB
+	}
+
+	reverse_proxy kc-relay:8080 {
+		# The relay trusts this header only from the proxy network. Always
+		# overwrite it with the real peer, whatever the client sent.
+		header_up X-Kc-Client-Ip {remote_host}
+
+		transport http {
+			dial_timeout 5s
+			# Long-polls hold the response for up to 25 s.
+			response_header_timeout 40s
+		}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+}

@@ -1,0 +1,52 @@
+[package]
+name = "kc-store"
+description = "1pass keychain: OS keychain adapter (macOS Keychain, Linux Secret Service, Windows Credential Manager) and local index"
+version.workspace = true
+edition.workspace = true
+# The keyring store crates (zbus-secret-service-keyring-store, windows-native-keyring-store)
+# need Rust 1.88, so this crate can't honour the workspace's 1.85.
+rust-version = "1.88"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[features]
+# Exposes `kc_store::testing::MemoryBackend` so crates that depend on kc-store can test
+# against an in-memory keychain. Never enable it for release builds.
+test-util = []
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+# macOS and Windows: keyring-core plus one store crate per OS, chosen explicitly. The `keyring`
+# v1 wrapper is deliberately not used (see the crate docs on the silent mock-store trap).
+keyring-core = "1"
+directories = "6"
+fd-lock = "4"
+humantime = "2"
+rand.workspace = true
+sha2 = "0.10"
+
+[target.'cfg(unix)'.dependencies]
+# Already used by fd-lock; kc-store needs the effective uid for the user-wide lock.
+rustix = { version = "1", features = ["process"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { version = "1", features = ["keychain"] }
+security-framework = "3"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-native-keyring-store = "1"
+regex = "1"
+
+# Linux / BSD: the Secret Service, driven directly. The keyring store crates for it
+# (zbus-/dbus-secret-service-keyring-store) unlock locked items by themselves, which shows a
+# password prompt; kc must never do that, so it uses the client library underneath them.
+[target.'cfg(all(unix, not(any(target_os = "macos", target_os = "ios", target_os = "android"))))'.dependencies]
+secret-service = { version = "5", features = ["crypto-rust"] }
+zbus = "5"
+
+[dev-dependencies]
+tempfile = "3"

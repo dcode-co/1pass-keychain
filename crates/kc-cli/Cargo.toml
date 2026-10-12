@@ -1,0 +1,56 @@
+[package]
+name = "kc-cli"
+description = "kc — move secrets between your devices' OS keychains (1pass keychain)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+name = "kc_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "kc"
+path = "src/main.rs"
+
+[dependencies]
+kc-wire.workspace = true
+kc-proto.workspace = true
+kc-store.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+zeroize.workspace = true
+tokio.workspace = true
+
+clap = { version = "4.6", features = ["derive"] }
+inquire = { version = "0.9", default-features = false, features = ["crossterm"] }
+# The hidden-input and code prompts read keys themselves, into wiped buffers.
+crossterm = "0.29"
+# Ctrl-C waits for the keychain call in flight (see `interrupt.rs`).
+ctrlc = "3.5"
+fd-lock = "4"
+directories = "6"
+# rustls only, never OpenSSL. `rustls-no-provider` + ring: aws-lc-sys carries the OpenSSL
+# license, which deny.toml doesn't allow. The ring provider is installed in `http.rs`.
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+toml = "1"
+sha2 = "0.10"
+gethostname = "1"
+humantime = "2"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+kc-proto = { workspace = true, features = ["test-util"] }
+kc-store = { workspace = true, features = ["test-util"] }
+kc-relay = { path = "../kc-relay", features = ["test-util"] }
+tokio = { workspace = true, features = ["io-util"] }
+tempfile = "3"
+postcard = { version = "1.1", default-features = false, features = ["alloc"] }
