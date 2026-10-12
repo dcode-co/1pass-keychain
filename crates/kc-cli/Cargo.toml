@@ -7,6 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+publish = false
 
 [lib]
 name = "kc_cli"
@@ -50,7 +51,7 @@ libc = "0.2"
 [dev-dependencies]
 kc-proto = { workspace = true, features = ["test-util"] }
 kc-store = { workspace = true, features = ["test-util"] }
-kc-relay = { path = "../kc-relay", features = ["test-util"] }
+kc-relay = { path = "../kc-relay", version = "0.1.0", features = ["test-util"] }
 tokio = { workspace = true, features = ["io-util"] }
 tempfile = "3"
 postcard = { version = "1.1", default-features = false, features = ["alloc"] }

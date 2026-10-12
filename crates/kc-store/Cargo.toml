@@ -9,6 +9,7 @@ rust-version = "1.88"
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+publish = false
 
 [features]
 # Exposes `kc_store::testing::MemoryBackend` so crates that depend on kc-store can test

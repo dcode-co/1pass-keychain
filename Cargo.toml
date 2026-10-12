@@ -15,9 +15,9 @@ authors = ["Dcode <support@1pass.dev>"]
 # `dep = { workspace = true, features = [...] }`. A lane that needs a crate that
 # isn't listed here may add it to its own Cargo.toml directly.
 [workspace.dependencies]
-kc-wire = { path = "crates/kc-wire" }
-kc-proto = { path = "crates/kc-proto" }
-kc-store = { path = "crates/kc-store" }
+kc-wire = { path = "crates/kc-wire", version = "0.1.0" }
+kc-proto = { path = "crates/kc-proto", version = "0.1.0" }
+kc-store = { path = "crates/kc-store", version = "0.1.0" }
 
 anyhow = "1"
 thiserror = "2"

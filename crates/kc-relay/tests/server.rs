@@ -7,9 +7,12 @@ use std::net::SocketAddr;
 use std::process::Command;
 use std::time::Duration;
 
+#[cfg(target_os = "linux")]
 use common::b64;
 use kc_relay::{Config, spawn_test_relay};
-use kc_wire::{ChannelAllocated, ChannelJoined, InboxCreated, WriterRegister};
+use kc_wire::{ChannelAllocated, ChannelJoined};
+#[cfg(target_os = "linux")]
+use kc_wire::{InboxCreated, WriterRegister};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 /// One HTTP/1.1 exchange with `Connection: close`; returns (status, body).
@@ -227,6 +230,7 @@ async fn large_payload_streams_over_a_real_connection() {
 }
 
 /// Poll `cond` every 20 ms for up to `limit`.
+#[cfg(target_os = "linux")]
 async fn eventually(limit: Duration, mut cond: impl FnMut() -> bool) -> bool {
     let deadline = std::time::Instant::now() + limit;
     while std::time::Instant::now() < deadline {
