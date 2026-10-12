@@ -160,6 +160,21 @@ impl Backend for Namespaced {
         Ok(self.memory.accounts(&self.namespace))
     }
 
+    fn purge(&self) -> Result<usize> {
+        let mut state = self.memory.lock();
+        let keys: Vec<(String, String)> = state
+            .entries
+            .keys()
+            .filter(|(service, _)| *service == self.namespace)
+            .cloned()
+            .collect();
+        let removed = keys.len();
+        for key in keys {
+            state.entries.remove(&key);
+        }
+        Ok(removed)
+    }
+
     fn read_foreign(&self, service: &str, account: Option<&str>) -> Result<ForeignItem> {
         let state = self.memory.lock();
         let found: Vec<(&String, &Zeroizing<Vec<u8>>)> = state

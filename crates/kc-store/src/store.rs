@@ -10,7 +10,7 @@ use zeroize::Zeroizing;
 
 use crate::backend::Backend;
 use crate::config::{DEFAULT_NAMESPACE, StoreConfig};
-use crate::encoding::{self, Head, MAX_VALUE_LEN, Manifest, TAG_INLINE};
+use crate::encoding::{self, Head, MAX_VALUE_LEN, Manifest};
 use crate::error::{Result, StoreError};
 use crate::index::{self, Index, IndexFile, ItemInfo, ItemKind, Origin, PrevRecord, Record};
 use crate::lock::Locks;
@@ -239,21 +239,26 @@ impl Store {
         })
     }
 
-    /// Every item in the namespace, found with the keychain's own search and decorated with
-    /// index metadata ([`Origin::Unknown`] where the index has none). Sorted by name.
+    /// The indexed items of the namespace that still exist in the keychain, sorted by name.
+    ///
+    /// Driven by the index, with a per-name `exists` check (a keychain search, a method call), so
+    /// it reads no secrets and makes no D-Bus property call. An item written outside kc, or one
+    /// present after the index was lost, isn't listed until [`reindex`](Self::reindex) picks it up;
+    /// [`verify`](Self::verify) reports such drift.
     pub fn list(&self) -> Result<Vec<ItemInfo>> {
         let backend = self.backend()?;
         self.lock.shared(self.cfg.lock_wait(), || {
-            let names = live_item_names(&backend.accounts()?);
             let index = self.index.load()?;
-            Ok(names
-                .iter()
-                .map(|name| {
-                    index
-                        .record(&self.cfg.namespace, name)
-                        .map_or_else(|| ItemInfo::unknown(name), |record| record.info(name))
-                })
-                .collect())
+            let Some(items) = index.items(&self.cfg.namespace) else {
+                return Ok(Vec::new());
+            };
+            let mut infos = Vec::new();
+            for (name, record) in items {
+                if backend.exists(&Slot::Item(name).account())? {
+                    infos.push(record.info(name));
+                }
+            }
+            Ok(infos)
         })
     }
 
@@ -399,12 +404,8 @@ impl Store {
         }
         let backend = self.backend()?;
         self.lock.exclusive(self.cfg.lock_wait(), || {
-            let mut removed = 0;
-            for account in backend.accounts()? {
-                if backend.delete(&account)? {
-                    removed += 1;
-                }
-            }
+            // Deletes every entry by path (no account names, so no secrets are read).
+            let removed = backend.purge()?;
             match self.index.load() {
                 Ok(mut index) => {
                     if index.namespaces.remove(&self.cfg.namespace).is_some() {
@@ -502,23 +503,32 @@ fn write_slot(
         .collect();
     let generation = fresh_generation(&in_use);
 
-    let (head, chunks) = if encoding::needs_chunks(value.len(), max_blob_len) {
+    // The head may later be copied to `#prev`/`#swap` (accounts five bytes longer than `base`);
+    // size against the longest so an inline value still fits the blob limit after it is reframed.
+    let head_account = slot
+        .swap_account()
+        .or_else(|| slot.prev_account())
+        .unwrap_or_else(|| base.clone());
+    let (head, chunks) = if encoding::needs_chunks(value.len(), max_blob_len, &head_account) {
+        let capacity = encoding::chunk_size(&base, generation, max_blob_len);
         let mut n: u32 = 0;
-        for part in value.chunks(encoding::chunk_size(max_blob_len)) {
-            backend.set(
-                &chunk_account(&base, generation, n),
-                &encoding::encode_chunk(part),
-            )?;
+        for part in value.chunks(capacity) {
+            let account = chunk_account(&base, generation, n);
+            backend.set(&account, &encoding::encode_chunk(&account, part))?;
             n += 1;
         }
         let manifest = Manifest::for_value(generation, n, value);
-        (Zeroizing::new(encoding::encode_manifest(&manifest)), n)
+        (
+            Zeroizing::new(encoding::encode_manifest(&base, &manifest)),
+            n,
+        )
     } else {
-        (encoding::encode_inline(value), 0)
+        (encoding::encode_inline(&base, value), 0)
     };
 
     if let (Some(prev_account), Some(current)) = (&prev_account, &current) {
-        backend.set(prev_account, current)?;
+        // Re-frame the head under its new account; the body (and its chunks) stay put.
+        backend.set(prev_account, &encoding::reframe(current, prev_account))?;
     }
     backend.set(&base, &head)?;
 
@@ -610,9 +620,9 @@ fn decode_value(
     chunk_base: &str,
     mut blob: Zeroizing<Vec<u8>>,
 ) -> Result<Zeroizing<Vec<u8>>> {
-    if blob.first() == Some(&TAG_INLINE) {
+    if let Some(prefix) = encoding::inline_prefix_len(&blob) {
         // In place: no second copy of the secret.
-        blob.remove(0);
+        blob.drain(0..prefix);
         return Ok(blob);
     }
     match encoding::peek(&blob) {
@@ -665,20 +675,32 @@ fn read_chunks(
     Ok(value)
 }
 
-/// Deletes a slot: the head first (from then on the value is gone), then `#prev`, then every
-/// remaining `<account>#…` entry the keychain's search finds (all chunk generations and
-/// leftovers of interrupted writes).
+/// Deletes a slot: the heads first (from then on the value is gone), then the chunks they point
+/// at. The generations are read from the heads' manifests before the heads go, so no keychain
+/// enumeration — and so no reading of every secret — is needed. Chunks of a generation no head
+/// points at (debris of an interrupted write) aren't cleaned here; [`collect_garbage`] does that
+/// in `reindex`.
 fn delete_slot(backend: &dyn Backend, slot: Slot<'_>) -> Result<bool> {
     let base = slot.account();
-    let mut existed = backend.delete(&base)?;
-    if let Some(prev) = slot.prev_account() {
-        existed |= backend.delete(&prev)?;
-    }
-    let prefix = format!("{base}#");
-    for account in backend.accounts()? {
-        if account.starts_with(&prefix) {
-            existed |= backend.delete(&account)?;
+    let heads: Vec<String> = [Some(base.clone()), slot.prev_account(), slot.swap_account()]
+        .into_iter()
+        .flatten()
+        .collect();
+    // Read the referenced generations while the heads still exist.
+    let mut generations: Vec<(u64, u32)> = Vec::new();
+    for head in &heads {
+        if let Some(blob) = fetch(backend, head)?
+            && let Some(generation) = head_generation(&blob)
+        {
+            generations.push(generation);
         }
+    }
+    let mut existed = false;
+    for head in &heads {
+        existed |= backend.delete(head)?;
+    }
+    for (generation, n) in generations {
+        delete_generation(backend, &base, generation, n)?;
     }
     Ok(existed)
 }
@@ -706,13 +728,14 @@ fn restore_slot(backend: &dyn Backend, name: &str) -> Result<bool> {
     let current = fetch(backend, &base)?;
     match &current {
         Some(current) => {
-            backend.set(&swap_account, current)?;
-            backend.set(&base, &prev)?;
-            backend.set(&prev_account, current)?;
+            // Each head keeps its body; only the account header is rewritten (see encoding).
+            backend.set(&swap_account, &encoding::reframe(current, &swap_account))?;
+            backend.set(&base, &encoding::reframe(&prev, &base))?;
+            backend.set(&prev_account, &encoding::reframe(current, &prev_account))?;
             backend.delete(&swap_account)?;
         }
         None => {
-            backend.set(&base, &prev)?;
+            backend.set(&base, &encoding::reframe(&prev, &base))?;
             backend.delete(&prev_account)?;
         }
     }
@@ -733,8 +756,11 @@ fn recover_interrupted_restore(backend: &dyn Backend, slot: Slot<'_>) -> Result<
     if let Some(swap) = fetch(backend, &swap_account)? {
         match fetch(backend, &slot.account())? {
             // The restore had already made the previous value current: the displaced value,
-            // kept in #swap, becomes the previous value.
-            Some(current) if current != swap => backend.set(&prev_account, &swap)?,
+            // kept in #swap, becomes the previous value. Compare bodies, not whole blobs, so the
+            // differing account headers don't count (see encoding::body).
+            Some(current) if encoding::body(&current) != encoding::body(&swap) => {
+                backend.set(&prev_account, &encoding::reframe(&swap, &prev_account))?;
+            }
             // It stopped before that, or the item was being deleted: nothing to finish.
             _ => {}
         }
@@ -788,6 +814,19 @@ fn collect_garbage(backend: &dyn Backend, accounts: &[String]) -> Result<usize> 
             has_value = fetch(backend, &slot.account())?.is_some();
         }
         if !has_value {
+            // On the Secret Service, `accounts()` recovers each account from the stored blob, so a
+            // head in a format kc can't frame-decode (a value another program wrote, or a newer or
+            // corrupt kc) never appears in `group.current`. Before treating the group as debris,
+            // make sure the head is really gone: a head that still exists and is non-empty holds a
+            // value, so leave it — and its #prev and chunks — alone rather than delete a
+            // recoverable secret. (Backends that enumerate real account names never hit this.)
+            if !group.current
+                && backend
+                    .get(&slot.account())?
+                    .is_some_and(|blob| !blob.is_empty())
+            {
+                continue;
+            }
             // No value: everything left is debris of an interrupted delete or creation.
             let leftovers = [
                 group.current.then(|| slot.account()),

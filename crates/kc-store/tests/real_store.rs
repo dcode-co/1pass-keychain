@@ -252,12 +252,41 @@ fn external_finds(namespace: &str, account: &str) -> Option<bool> {
 
 #[cfg(target_os = "windows")]
 fn external_finds(namespace: &str, account: &str) -> Option<bool> {
-    let target = format!("{account}@{namespace}");
+    // The real backend stores each entry under the Credential Manager target
+    // `<account>@<namespace>` with upper-case letters escaped as `!<lower>` (see
+    // backend::keyring's Windows `store_name`); build the same target so upper-case names are
+    // scoped correctly.
+    let target = format!(
+        "{}@{}",
+        windows_store_name(account),
+        windows_store_name(namespace)
+    );
     let output = Command::new("cmdkey")
         .arg(format!("/list:{target}"))
         .output()
         .unwrap();
-    Some(String::from_utf8_lossy(&output.stdout).contains(&target))
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // `cmdkey /list:<target>` echoes the target in its header line even when nothing is stored, so
+    // `contains(target)` is a false positive. Scoped to our exact target, the credential exists
+    // iff cmdkey didn't print its empty-list marker "* NONE *". (The "Target:" label is localized,
+    // so it can't be matched portably; "* NONE *" is the documented marker.)
+    Some(!stdout.contains("* NONE *"))
+}
+
+/// Mirrors backend::keyring's Windows `store_name`: upper-case letters are escaped as `!<lower>`
+/// so the case-insensitive Credential Manager keeps case-sensitive kc names distinct.
+#[cfg(target_os = "windows")]
+fn windows_store_name(name: &str) -> String {
+    let mut encoded = String::with_capacity(name.len());
+    for c in name.chars() {
+        if c.is_ascii_uppercase() {
+            encoded.push('!');
+            encoded.push(c.to_ascii_lowercase());
+        } else {
+            encoded.push(c);
+        }
+    }
+    encoded
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -340,12 +369,21 @@ fn chunked_values_use_generations_and_overwrites_clean_up() {
     );
     assert_eq!(get(&ns.chunky_store(), "big"), Some(v1.clone()));
     assert_external(&ns.namespace, "item:big", true);
-    // Seen from another process: 7 chunks of one generation.
+    // Seen from another process: several chunks of one generation (the exact count depends on
+    // the blob limit and the account frame, so it is derived rather than hard-coded).
     #[cfg(target_os = "linux")]
     let g1 = external_accounts(&ns.namespace).map(|accounts| {
         let chunks = chunk_generations(&accounts, "item:big");
-        assert_eq!(chunks.len(), 7, "{accounts:?}");
-        chunks[0].0
+        assert!(
+            chunks.len() > 1,
+            "v1 should span several chunks: {accounts:?}"
+        );
+        let g1 = chunks[0].0;
+        assert!(
+            chunks.iter().all(|(g, _)| *g == g1),
+            "one generation: {accounts:?}"
+        );
+        g1
     });
 
     // Shrink: 7 chunks of one generation → 3 chunks of another; v1 stays as #prev.
@@ -371,11 +409,18 @@ fn chunked_values_use_generations_and_overwrites_clean_up() {
     #[cfg(target_os = "linux")]
     if let (Some(accounts), Some(g1)) = (external_accounts(&ns.namespace), g1) {
         let chunks = chunk_generations(&accounts, "item:big");
-        assert_eq!(chunks.len(), 3, "{accounts:?}");
-        assert!(chunks.iter().all(|(generation, _)| *generation != g1));
+        assert!(
+            !chunks.is_empty(),
+            "the previous value keeps its chunks: {accounts:?}"
+        );
+        assert!(
+            chunks.iter().all(|(generation, _)| *generation != g1),
+            "v1's generation is gone: {accounts:?}"
+        );
         assert!(accounts.contains(&"item:big".to_owned()));
         assert!(accounts.contains(&"item:big#prev".to_owned()));
-        assert_eq!(accounts.len(), 5, "{accounts:?}");
+        // item:big (inline v3) + item:big#prev (v2's manifest) + v2's chunks.
+        assert_eq!(accounts.len(), 2 + chunks.len(), "{accounts:?}");
     }
 
     // The previous value comes back, verified, and a second restore undoes the first.
@@ -473,16 +518,17 @@ fn list_verify_and_reindex_use_the_keychain() {
     let listed: Vec<String> = store.list().unwrap().into_iter().map(|i| i.name).collect();
     assert_eq!(listed, ["a", "b/c"]);
 
-    // Lose the metadata cache: the keychain still lists the items.
+    // Lose the metadata cache: list is index-driven, so it shows nothing until reindex rebuilds
+    // the index from the keychain. verify still reports the items as unindexed drift.
     std::fs::remove_file(ns.dir.path().join("index.json")).unwrap();
     let store = ns.store();
-    let listed = store.list().unwrap();
-    assert_eq!(listed.len(), 2);
-    assert!(listed.iter().all(|item| item.origin == Origin::Unknown));
+    assert!(store.list().unwrap().is_empty());
     assert_eq!(store.verify().unwrap().unindexed, ["a", "b/c"]);
     let report = store.reindex().unwrap();
     assert_eq!(report.added, ["a", "b/c"]);
     assert!(store.verify().unwrap().is_clean());
+    let listed: Vec<String> = store.list().unwrap().into_iter().map(|i| i.name).collect();
+    assert_eq!(listed, ["a", "b/c"]);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -519,7 +565,7 @@ impl Drop for ClearService {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn reads_entries_written_by_another_program() {
+fn an_unframed_entry_under_a_kc_account_is_reported_not_returned() {
     let Some(ns) = TestNs::new("reverse") else {
         return;
     };
@@ -527,7 +573,9 @@ fn reads_entries_written_by_another_program() {
         eprintln!("skipping reverse: secret-tool is not installed");
         return;
     }
-    // kc's own format (tag 0x01 + value), written by a different program.
+    // Some other program put a value under a kc account, but not in kc's framed (v2) format.
+    // (kc recovers each entry's account from the stored blob with method calls only, never a
+    // D-Bus property read, so every entry it writes carries that frame.)
     secret_tool_store(
         &[
             "service",
@@ -535,20 +583,13 @@ fn reads_entries_written_by_another_program() {
             "username",
             "item:from-secret-tool",
         ],
-        b"\x01fake-written-elsewhere",
+        b"fake-written-elsewhere",
     );
-    assert_eq!(
-        get(&ns.store(), "from-secret-tool").as_deref(),
-        Some(&b"fake-written-elsewhere"[..])
-    );
-    let listed: Vec<String> = ns
-        .store()
-        .list()
-        .unwrap()
-        .into_iter()
-        .map(|i| i.name)
-        .collect();
-    assert_eq!(listed, ["from-secret-tool"]);
+    // kc won't hand back an entry it can't recognise as its own framed format.
+    let err = ns.store().get("from-secret-tool").unwrap_err();
+    assert!(matches!(err, StoreError::Corrupt { .. }), "{err}");
+    // It isn't in the index, so it isn't listed either.
+    assert!(ns.store().list().unwrap().is_empty());
 }
 
 #[cfg(target_os = "linux")]
@@ -589,13 +630,20 @@ fn adopt_reads_secret_tool_and_keyring_style_items() {
         get(&ns.store(), "adopted/b").as_deref(),
         Some(&b"fake-adopt-you"[..])
     );
-    // Without an account: the single item.
+    // Without an account: the single item. On Linux kc can't read the item's attributes back
+    // (that is a D-Bus property call, which can crash gnome-keyring), so the source account is
+    // not recorded; on macOS/Windows it is.
     let outcome = store.adopt(&svc_a, None, "adopted/c").unwrap();
+    let recovered_account = if cfg!(target_os = "linux") {
+        None
+    } else {
+        Some("me".to_string())
+    };
     assert_eq!(
         outcome.info.origin,
         Origin::Adopted {
             service: svc_a.clone(),
-            account: Some("me".into()),
+            account: recovered_account,
         }
     );
     // The originals are untouched.
@@ -612,11 +660,15 @@ fn adopt_reads_secret_tool_and_keyring_style_items() {
     let err = store.adopt(&svc_a, None, "adopted/d").unwrap_err();
     assert!(matches!(err, StoreError::Ambiguous { .. }), "{err}");
     assert_eq!(err.exit_code(), 2);
-    let message = err.to_string();
-    assert!(
-        message.contains("account=me") && message.contains("account=other"),
-        "{message}"
-    );
+    // macOS/Windows list the candidate accounts; Linux can't (that is a property call) and lists
+    // the matching object paths instead, but still reports the ambiguity.
+    if !cfg!(target_os = "linux") {
+        let message = err.to_string();
+        assert!(
+            message.contains("account=me") && message.contains("account=other"),
+            "{message}"
+        );
+    }
     let err = store
         .adopt(&format!("kc-test-missing-{}", random_suffix()), None, "x")
         .unwrap_err();
@@ -1069,6 +1121,7 @@ fn isolated_real_store_suite() {
         "dbus-run-session",
         "gnome-keyring-daemon",
         "secret-tool",
+        "dbus-monitor",
         "pgrep",
         "pkill",
     ];
@@ -1182,6 +1235,26 @@ fn stress_short_lived_processes_keep_the_keyring_daemon_alive() {
         true
     };
 
+    // Proof that kc issues no D-Bus property calls on any path: watch the private bus for
+    // `org.freedesktop.DBus.Properties` method calls throughout the churn below. Started after the
+    // foreign item is seeded, so secret-tool's own traffic isn't counted; the only caller left is
+    // kc. A property read orphaned by an exiting kc process is what crashes gnome-keyring, so the
+    // fix is to make none at all.
+    let monitor_log = ns.dir.path().join("properties-monitor.log");
+    let mut monitor = have("dbus-monitor").then(|| {
+        let out = std::fs::File::create(&monitor_log).unwrap();
+        Command::new("dbus-monitor")
+            .args([
+                "--session",
+                "type=method_call,interface=org.freedesktop.DBus.Properties",
+            ])
+            .stdout(std::process::Stdio::from(out))
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap()
+    });
+    std::thread::sleep(Duration::from_millis(300)); // let the monitor attach before the churn
+
     let waves = 20;
     let hot_per_wave = 24;
     let ops_per_wave = 4;
@@ -1264,6 +1337,38 @@ fn stress_short_lived_processes_keep_the_keyring_daemon_alive() {
         keyring_alive(&daemon_pid),
         "the keyring daemon died by the end of the stress run"
     );
+
+    // Stop the monitor and check the property traffic kc made during the churn above. The crash
+    // comes from an orphaned property read on a Collection or Item object: those getters open a
+    // PKCS#11 session for the caller and abort (the GLib assertion) when the caller has already
+    // disconnected. kc must make none of those.
+    if let Some(mut monitor) = monitor.take() {
+        std::thread::sleep(Duration::from_millis(200)); // let dbus-monitor flush
+        let _ = monitor.kill();
+        let _ = monitor.wait();
+        let log = std::fs::read_to_string(&monitor_log).unwrap_or_default();
+        // kc's own code makes method calls only (OpenSession, ReadAlias, SearchItems, CreateItem,
+        // SetSecret, GetSecret, Delete). The crash vectors it used to issue were single-property
+        // reads — `Collection.Locked`/`Label` and `Item.Attributes`, i.e. `Properties.Get`. None
+        // of those must come back.
+        let single_gets = log.lines().filter(|l| l.ends_with("member=Get")).count();
+        assert_eq!(
+            single_gets, 0,
+            "kc issued {single_gets} Properties.Get call(s) (the gnome-keyring crash vector):\n{log}"
+        );
+        // Residual, not from kc's code: the secret-service crate builds its `Service` proxy with
+        // zbus CacheProperties::Lazily, whose property-cache task fires a background `GetAll`.
+        // kc never reads a property; removing these needs the crate built with CacheProperties::No
+        // (a one-line change, best vendored/upstreamed) or a raw client. Reported, not asserted.
+        let getalls = log.lines().filter(|l| l.ends_with("member=GetAll")).count();
+        if getalls > 0 {
+            eprintln!(
+                "note: {getalls} background GetAll(s) from the secret-service crate's cached \
+                 Service proxy (CacheProperties::Lazily); see the follow-up report"
+            );
+        }
+    }
+
     if foreign_seeded {
         let _ = Command::new("secret-tool")
             .args(["clear", "service", &foreign])

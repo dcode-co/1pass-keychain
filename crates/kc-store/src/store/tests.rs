@@ -6,7 +6,9 @@ use std::thread;
 
 use super::*;
 use crate::ErrorKind;
-use crate::encoding::{TAG_CHUNK, TAG_MANIFEST, encode_chunk, encode_inline, sha256_hex};
+use crate::encoding::{
+    Head, account_of, chunk_payload, encode_chunk, encode_inline, peek, sha256_hex,
+};
 use crate::testing::MemoryBackend;
 
 const NS: &str = "dev.1pass.kc.unit";
@@ -50,8 +52,7 @@ fn names(items: &[ItemInfo]) -> Vec<&str> {
 /// The generation the manifest at `head` points at (generations are random).
 fn generation_of(memory: &MemoryBackend, head: &str) -> u64 {
     let blob = memory.raw(NS, head).expect("head exists");
-    let manifest: serde_json::Value = serde_json::from_slice(&blob[1..]).unwrap();
-    manifest["gen"].as_u64().unwrap()
+    peek(&blob).manifest().expect("a manifest head").generation
 }
 
 fn chunk(base: &str, generation: u64, index: u32) -> String {
@@ -83,10 +84,9 @@ fn set_then_get_through_a_separate_store_instance() {
         Some(&b"fake-sk-123"[..])
     );
     assert_eq!(get(&second, "missing"), None);
-    assert_eq!(
-        memory.raw(NS, "item:openai-api-key").unwrap()[0],
-        TAG_INLINE
-    );
+    let raw = memory.raw(NS, "item:openai-api-key").unwrap();
+    assert_eq!(account_of(&raw).as_deref(), Some("item:openai-api-key"));
+    assert!(matches!(peek(&raw), Head::Inline(b"fake-sk-123")));
     assert!(second.exists("openai-api-key").unwrap());
     assert!(!second.exists("missing").unwrap());
 }
@@ -99,9 +99,17 @@ fn large_values_are_chunked_under_a_generation_and_verified() {
     let value = fake(1000, 7);
     set(&store, "big", &value);
 
-    // ceil(1000 / 159) = 7 chunks of one generation, then the manifest.
+    // Several chunks of one generation, then the manifest. The exact count depends on the blob
+    // limit and the account frame, so it is derived rather than hard-coded.
     let generation = generation_of(&memory, "item:big");
-    let mut expected: Vec<String> = (0..7).map(|i| chunk("item:big", generation, i)).collect();
+    let n = chunks_of(&memory, "item:big", generation);
+    assert!(
+        n > 1,
+        "a 1000-byte value should chunk under the smallest limit"
+    );
+    let mut expected: Vec<String> = (0..n as u32)
+        .map(|i| chunk("item:big", generation, i))
+        .collect();
     expected.push("item:big".into());
     expected.sort();
     assert_eq!(accounts(&memory), expected);
@@ -112,19 +120,19 @@ fn large_values_are_chunked_under_a_generation_and_verified() {
             "{account} is {} bytes",
             blob.len()
         );
-        let tag = if account == "item:big" {
-            TAG_MANIFEST
+        assert_eq!(account_of(&blob).as_deref(), Some(account.as_str()));
+        if account == "item:big" {
+            assert!(matches!(peek(&blob), Head::Manifest(_)), "{account}");
         } else {
-            TAG_CHUNK
-        };
-        assert_eq!(blob[0], tag, "{account}");
+            assert!(chunk_payload(&account, &blob).is_ok(), "{account}");
+        }
     }
     let head = memory.raw(NS, "item:big").unwrap();
-    let manifest: serde_json::Value = serde_json::from_slice(&head[1..]).unwrap();
-    assert_eq!(manifest["gen"], generation);
-    assert_eq!(manifest["n"], 7);
-    assert_eq!(manifest["len"], 1000);
-    assert_eq!(manifest["sha256"], sha256_hex(&value));
+    let manifest = peek(&head).manifest().cloned().unwrap();
+    assert_eq!(manifest.generation, generation);
+    assert_eq!(manifest.n as usize, n);
+    assert_eq!(manifest.len, 1000);
+    assert_eq!(manifest.sha256, sha256_hex(&value));
 
     assert_eq!(get(&open(dir.path(), &memory), "big"), Some(value));
 }
@@ -134,20 +142,26 @@ fn values_are_inline_up_to_the_blob_limit() {
     let dir = tempfile::tempdir().unwrap();
     let memory = MemoryBackend::new();
     let store = open(dir.path(), &memory);
-    set(&store, "fits", &fake(159, 1)); // tag + 159 bytes = 160
-    set(&store, "spills", &fake(160, 2));
-    let generation = generation_of(&memory, "item:spills");
-    assert_eq!(
-        accounts(&memory),
-        [
-            "item:fits".to_owned(),
-            "item:spills".to_owned(),
-            chunk("item:spills", generation, 0),
-            chunk("item:spills", generation, 1),
-        ]
+    // The largest value that still fits inline is the limit minus the frame (format byte, u16
+    // length, the account) and the one-byte tag — sized against the longest account the head may
+    // be copied to (`#prev`/`#swap`), so the inline value still fits once reframed.
+    let fits = crate::MIN_MAX_BLOB_LEN - (1 + 2 + "item:fits#prev".len() + 1);
+    set(&store, "fits", &fake(fits, 1));
+    set(&store, "spills", &fake(fits + 1, 2));
+    assert!(
+        matches!(peek(&memory.raw(NS, "item:fits").unwrap()), Head::Inline(_)),
+        "a value at the limit is inline"
     );
-    assert_eq!(get(&store, "fits"), Some(fake(159, 1)));
-    assert_eq!(get(&store, "spills"), Some(fake(160, 2)));
+    assert!(
+        peek(&memory.raw(NS, "item:spills").unwrap())
+            .manifest()
+            .is_some(),
+        "one byte over the limit chunks"
+    );
+    let generation = generation_of(&memory, "item:spills");
+    assert!(chunks_of(&memory, "item:spills", generation) >= 1);
+    assert_eq!(get(&store, "fits"), Some(fake(fits, 1)));
+    assert_eq!(get(&store, "spills"), Some(fake(fits + 1, 2)));
 }
 
 #[test]
@@ -171,19 +185,24 @@ fn overwrite_keeps_one_previous_value_and_drops_older_generations() {
     let store = open(dir.path(), &memory);
     let (v1, v2, v3) = (fake(1000, 1), fake(350, 2), fake(10, 3));
 
-    assert_eq!(set(&store, "k", &v1), Change::Created); // 7 chunks
+    assert_eq!(set(&store, "k", &v1), Change::Created);
     let g1 = generation_of(&memory, "item:k");
-    assert_eq!(set(&store, "k", &v2), Change::Updated); // 3 chunks
+    let g1_chunks = chunks_of(&memory, "item:k", g1);
+    assert!(g1_chunks > 1, "v1 should span several chunks");
+    assert_eq!(set(&store, "k", &v2), Change::Updated);
     let g2 = generation_of(&memory, "item:k");
+    let g2_chunks = chunks_of(&memory, "item:k", g2);
+    assert!(g2_chunks >= 1);
     assert_ne!(g1, g2);
-    assert_eq!(chunks_of(&memory, "item:k", g1), 7);
-    assert_eq!(chunks_of(&memory, "item:k", g2), 3);
+    assert_eq!(chunks_of(&memory, "item:k", g1), g1_chunks); // v1 kept as #prev
     assert!(accounts(&memory).contains(&"item:k#prev".to_owned()));
 
     // Shrinking to an inline value: v2 becomes the previous value (its generation stays) and
     // v1's generation, which nothing points at any more, is deleted.
     assert_eq!(set(&store, "k", &v3), Change::Updated);
-    let mut expected: Vec<String> = (0..3).map(|i| chunk("item:k", g2, i)).collect();
+    let mut expected: Vec<String> = (0..g2_chunks as u32)
+        .map(|i| chunk("item:k", g2, i))
+        .collect();
     expected.extend(["item:k".to_owned(), "item:k#prev".to_owned()]);
     expected.sort();
     assert_eq!(accounts(&memory), expected);
@@ -198,6 +217,8 @@ fn restore_swaps_the_current_and_previous_values() {
     let (v1, v2) = (fake(500, 1), fake(300, 2));
     store.set("k", &v1, ItemKind::Text, Origin::Local).unwrap();
     let g1 = generation_of(&memory, "item:k");
+    let g1_chunks = chunks_of(&memory, "item:k", g1);
+    assert!(g1_chunks > 1, "v1 should span several chunks");
     let received = Origin::Received {
         from_device: "macbook".into(),
     };
@@ -205,6 +226,8 @@ fn restore_swaps_the_current_and_previous_values() {
         .set("k", &v2, ItemKind::File, received.clone())
         .unwrap();
     let g2 = generation_of(&memory, "item:k");
+    let g2_chunks = chunks_of(&memory, "item:k", g2);
+    assert!(g2_chunks >= 1);
 
     let info = store.restore("k").unwrap();
     assert_eq!(get(&store, "k"), Some(v1.clone()));
@@ -215,8 +238,8 @@ fn restore_swaps_the_current_and_previous_values() {
     assert_eq!((info.kind, &info.origin), (ItemKind::File, &received));
 
     // Both generations were still referenced throughout; nothing was rewritten as chunks.
-    assert_eq!(chunks_of(&memory, "item:k", g1), 4);
-    assert_eq!(chunks_of(&memory, "item:k", g2), 2);
+    assert_eq!(chunks_of(&memory, "item:k", g1), g1_chunks);
+    assert_eq!(chunks_of(&memory, "item:k", g2), g2_chunks);
 }
 
 #[test]
@@ -231,7 +254,8 @@ fn restore_needs_a_readable_previous_value() {
     assert_eq!(err.exit_code(), 3);
 
     set(&store, "k", &fake(10, 2));
-    assert!(memory.remove(NS, &chunk("item:k", g1, 2)));
+    // Damage the first chunk of the (now previous) value; every chunked value has chunk 0.
+    assert!(memory.remove(NS, &chunk("item:k", g1, 0)));
     let err = store.restore("k").unwrap_err();
     assert!(matches!(err, StoreError::Corrupt { .. }), "{err}");
     // Nothing changed.
@@ -267,11 +291,13 @@ fn rewriting_a_damaged_value_repairs_it() {
     let dir = tempfile::tempdir().unwrap();
     let memory = MemoryBackend::new();
     let store = open(dir.path(), &memory);
-    let value = fake(500, 5);
+    let value = fake(1000, 5);
     set(&store, "big", &value);
-    let damaged = chunk("item:big", generation_of(&memory, "item:big"), 3);
+    let damaged = chunk("item:big", generation_of(&memory, "item:big"), 0);
     let mut blob = memory.raw(NS, &damaged).unwrap().to_vec();
-    blob[5] ^= 0xff;
+    // The last byte is always in the chunk's payload (the frame and tag come first).
+    let last = blob.len() - 1;
+    blob[last] ^= 0xff;
     memory.insert(NS, &damaged, &blob);
     assert!(matches!(
         store.get("big").unwrap_err(),
@@ -288,7 +314,7 @@ fn damaged_values_are_reported_not_returned() {
     let dir = tempfile::tempdir().unwrap();
     let memory = MemoryBackend::new();
     let store = open(dir.path(), &memory);
-    let value = fake(500, 9);
+    let value = fake(1000, 9);
     let check = |label: &str| {
         let err = store.get("big").unwrap_err();
         assert!(matches!(err, StoreError::Corrupt { .. }), "{label}: {err}");
@@ -298,14 +324,16 @@ fn damaged_values_are_reported_not_returned() {
     };
 
     set(&store, "big", &value);
-    let damaged = chunk("item:big", generation_of(&memory, "item:big"), 2);
+    let damaged = chunk("item:big", generation_of(&memory, "item:big"), 1);
     let mut blob = memory.raw(NS, &damaged).unwrap().to_vec();
-    blob[1] ^= 1;
+    // The last byte is always in the chunk's payload.
+    let last = blob.len() - 1;
+    blob[last] ^= 1;
     memory.insert(NS, &damaged, &blob);
     check("flipped bit");
 
-    set(&store, "big", &fake(500, 10));
-    let missing = chunk("item:big", generation_of(&memory, "item:big"), 3);
+    set(&store, "big", &fake(1000, 10));
+    let missing = chunk("item:big", generation_of(&memory, "item:big"), 0);
     assert!(memory.remove(NS, &missing));
     check("missing chunk");
 
@@ -315,9 +343,9 @@ fn damaged_values_are_reported_not_returned() {
     memory.insert(NS, "item:big", b"\x02{\"gen\":1}");
     check("bad manifest");
 
-    set(&store, "big", &fake(500, 11));
+    set(&store, "big", &fake(1000, 11));
     let wrong = chunk("item:big", generation_of(&memory, "item:big"), 0);
-    memory.insert(NS, &wrong, &encode_inline(b"not a chunk"));
+    memory.insert(NS, &wrong, &encode_inline(&wrong, b"not a chunk"));
     check("wrong chunk tag");
 }
 
@@ -326,15 +354,17 @@ fn an_interrupted_write_leaves_the_old_value_readable() {
     let dir = tempfile::tempdir().unwrap();
     let memory = MemoryBackend::new();
     let store = open(dir.path(), &memory);
-    let v1 = fake(500, 1); // 4 chunks
+    let v1 = fake(500, 1);
     set(&store, "k", &v1);
     let g1 = generation_of(&memory, "item:k");
+    let v1_chunks = chunks_of(&memory, "item:k", g1);
+    assert!(v1_chunks >= 1);
     let info = store.info("k").unwrap().unwrap();
 
-    // Five chunks of a new generation get written, then the keychain fails.
+    // Five chunks of a new, larger generation get written, then the sixth write fails.
     memory.fail_writes_after(5);
     let err = store
-        .set("k", &fake(800, 2), ItemKind::Text, Origin::Local)
+        .set("k", &fake(4000, 2), ItemKind::Text, Origin::Local)
         .unwrap_err();
     assert!(matches!(err, StoreError::Backend { .. }), "{err}");
     memory.allow_writes();
@@ -342,15 +372,18 @@ fn an_interrupted_write_leaves_the_old_value_readable() {
     // The manifest still points at v1's generation, and the index didn't move.
     assert_eq!(get(&store, "k"), Some(v1.clone()));
     assert_eq!(store.info("k").unwrap().unwrap(), info);
-    assert_eq!(accounts(&memory).len(), 1 + 4 + 5);
+    assert_eq!(accounts(&memory).len(), 1 + v1_chunks + 5);
 
-    // A retry writes yet another generation; reindex clears the failed attempt's chunks.
-    let v2 = fake(200, 3); // 2 chunks
+    // A retry writes yet another generation; reindex clears the failed attempt's five chunks.
+    let v2 = fake(600, 3); // large enough to chunk under the smallest blob limit
     assert_eq!(set(&store, "k", &v2), Change::Updated);
     let g2 = generation_of(&memory, "item:k");
+    let v2_chunks = chunks_of(&memory, "item:k", g2);
     assert_eq!(store.reindex().unwrap().orphans_removed, 5);
-    let mut expected: Vec<String> = (0..4).map(|i| chunk("item:k", g1, i)).collect();
-    expected.extend((0..2).map(|i| chunk("item:k", g2, i)));
+    let mut expected: Vec<String> = (0..v1_chunks as u32)
+        .map(|i| chunk("item:k", g1, i))
+        .collect();
+    expected.extend((0..v2_chunks as u32).map(|i| chunk("item:k", g2, i)));
     expected.extend(["item:k".to_owned(), "item:k#prev".to_owned()]);
     expected.sort();
     assert_eq!(accounts(&memory), expected);
@@ -398,20 +431,21 @@ fn updates_keep_the_creation_time() {
 }
 
 #[test]
-fn delete_removes_value_previous_value_chunks_and_leftovers() {
+fn delete_removes_value_previous_value_and_chunks() {
     let dir = tempfile::tempdir().unwrap();
     let memory = MemoryBackend::new();
     let store = open(dir.path(), &memory);
     set(&store, "k", &fake(500, 1));
-    set(&store, "k", &fake(400, 2));
-    // Something an interrupted write could have left behind.
-    memory.insert(NS, "item:k#9.0", &encode_chunk(b"left over"));
+    set(&store, "k", &fake(400, 2)); // k now has a current value, a #prev and two generations
     // Neighbours that share a prefix must survive.
     for name in ["k2", "k/x", "kk"] {
         set(&store, name, b"fake-neighbour");
     }
 
     assert!(store.delete("k").unwrap());
+    // k's value, its previous value and every live chunk of both are gone; neighbours survive.
+    // (A chunk of a generation no head points at — debris of an interrupted write — isn't
+    // enumerated on delete; reindex removes it, see verify_reports_drift_and_reindex_repairs_it.)
     assert_eq!(accounts(&memory), ["item:k/x", "item:k2", "item:kk"]);
     assert_eq!(store.info("k").unwrap(), None);
     assert_eq!(get(&store, "k"), None);
@@ -419,7 +453,7 @@ fn delete_removes_value_previous_value_chunks_and_leftovers() {
 }
 
 #[test]
-fn list_comes_from_the_keychain_and_the_index_only_adds_metadata() {
+fn list_is_driven_by_the_index_and_checks_existence() {
     let dir = tempfile::tempdir().unwrap();
     let memory = MemoryBackend::new();
     let store = open(dir.path(), &memory);
@@ -437,11 +471,16 @@ fn list_comes_from_the_keychain_and_the_index_only_adds_metadata() {
     set(&store, "big", &fake(300, 1));
     set(&store, "big", &fake(301, 1)); // has #prev and two generations
     store.set_internal("device-key", b"fake-key").unwrap();
-    memory.insert(NS, "item:written-elsewhere", &encode_inline(b"fake"));
+    // Written outside kc (not in the index): not listed until reindex picks it up.
+    memory.insert(
+        NS,
+        "item:written-elsewhere",
+        &encode_inline("item:written-elsewhere", b"fake"),
+    );
     memory.insert(NS, "unrelated-account", b"fake");
 
     let items = store.list().unwrap();
-    assert_eq!(names(&items), ["a", "b/c", "big", "written-elsewhere"]);
+    assert_eq!(names(&items), ["a", "b/c", "big"]);
     assert_eq!(items[1].kind, ItemKind::File);
     assert_eq!(
         items[1].origin,
@@ -449,14 +488,16 @@ fn list_comes_from_the_keychain_and_the_index_only_adds_metadata() {
             from_device: "mac-mini".into()
         }
     );
-    assert_eq!(items[3].origin, Origin::Unknown);
-    assert_eq!(items[3].created_at, None);
+    // Internal slots are never listed.
+    assert!(!names(&items).contains(&"device-key"));
 
-    // Without the index, the same names are listed; only the metadata is gone.
+    // An indexed item deleted behind kc's back drops out of the list (existence is checked).
+    assert!(memory.remove(NS, "item:a"));
+    assert_eq!(names(&store.list().unwrap()), ["b/c", "big"]);
+
+    // Without the index, nothing is listed until reindex rebuilds it from the keychain.
     fs::remove_file(dir.path().join("index.json")).unwrap();
-    let items = store.list().unwrap();
-    assert_eq!(names(&items), ["a", "b/c", "big", "written-elsewhere"]);
-    assert!(items.iter().all(|item| item.origin == Origin::Unknown));
+    assert!(store.list().unwrap().is_empty());
 }
 
 #[test]
@@ -469,12 +510,20 @@ fn verify_reports_drift_and_reindex_repairs_it() {
     set(&store, "big", &fake(300, 1));
     // Changes behind kc's back.
     memory.remove(NS, "item:gone");
-    memory.insert(NS, "item:new", &encode_inline(b"fake-new"));
+    memory.insert(NS, "item:new", &encode_inline("item:new", b"fake-new"));
     // Orphans: a chunk of a generation nothing points at, and a #prev whose item is gone.
     // (Generation 0 is never used.)
-    memory.insert(NS, "item:big#0.0", &encode_chunk(b"orphan"));
-    memory.insert(NS, "item:ghost#prev", &encode_inline(b"orphan"));
-    memory.insert(NS, "item:ghost#3.0", &encode_chunk(b"orphan"));
+    memory.insert(NS, "item:big#0.0", &encode_chunk("item:big#0.0", b"orphan"));
+    memory.insert(
+        NS,
+        "item:ghost#prev",
+        &encode_inline("item:ghost#prev", b"orphan"),
+    );
+    memory.insert(
+        NS,
+        "item:ghost#3.0",
+        &encode_chunk("item:ghost#3.0", b"orphan"),
+    );
 
     let drift = store.verify().unwrap();
     assert_eq!(names(&drift.stale), ["gone"]);
@@ -505,7 +554,11 @@ fn reindex_leaves_chunks_of_unreadable_heads_alone() {
     let store = open(dir.path(), &memory);
     // A head in a format this kc doesn't know (a newer kc?) with chunks it can't interpret.
     memory.insert(NS, "item:future", &[0x09, 1, 2, 3]);
-    memory.insert(NS, "item:future#5.0", &encode_chunk(b"future"));
+    memory.insert(
+        NS,
+        "item:future#5.0",
+        &encode_chunk("item:future#5.0", b"future"),
+    );
     let report = store.reindex().unwrap();
     assert_eq!(report.orphans_removed, 0);
     assert!(memory.raw(NS, "item:future#5.0").is_some());
@@ -897,7 +950,11 @@ fn an_empty_head_is_an_unfinished_creation() {
     let memory = MemoryBackend::new();
     let store = open(dir.path(), &memory);
     // A creation cut off after the chunks and an empty head.
-    memory.insert(NS, "item:new#1.0", &encode_chunk(b"fake-part"));
+    memory.insert(
+        NS,
+        "item:new#1.0",
+        &encode_chunk("item:new#1.0", b"fake-part"),
+    );
     memory.insert(NS, "item:new", b"");
     assert_eq!(get(&store, "new"), None);
     let report = store.reindex().unwrap();
@@ -913,20 +970,27 @@ fn reindex_keeps_chunks_either_head_needs() {
     let dir = tempfile::tempdir().unwrap();
     let memory = MemoryBackend::new();
     let store = open(dir.path(), &memory);
-    let value = fake(600, 1); // 4 chunks
+    let value = fake(600, 1);
     set(&store, "k", &value);
     let generation = generation_of(&memory, "item:k");
+    let n = chunks_of(&memory, "item:k", generation);
+    assert!(n >= 2, "the value should span several chunks");
     // An interrupted write left #prev pointing at the same generation, and this copy claims
     // fewer chunks (damaged but well-formed).
     let short = crate::encoding::Manifest {
         generation,
-        n: 2,
-        len: 300,
+        n: (n - 1) as u32,
+        len: 100,
         sha256: "0".repeat(64),
     };
-    memory.insert(NS, "item:k#prev", &crate::encoding::encode_manifest(&short));
+    memory.insert(
+        NS,
+        "item:k#prev",
+        &crate::encoding::encode_manifest("item:k#prev", &short),
+    );
     store.reindex().unwrap();
-    assert_eq!(chunks_of(&memory, "item:k", generation), 4);
+    // The chunks the real head needs survive (the max of the two heads' counts).
+    assert_eq!(chunks_of(&memory, "item:k", generation), n);
     assert_eq!(get(&store, "k"), Some(value));
 }
 
@@ -939,9 +1003,108 @@ fn reindex_removes_stray_chunks_inside_a_live_generation() {
     set(&store, "k", &value);
     // A sparse tail an interrupted cleanup could leave: .3 without .2.
     let stray = chunk("item:k", generation_of(&memory, "item:k"), 3);
-    memory.insert(NS, &stray, &encode_chunk(b"stray"));
+    memory.insert(NS, &stray, &encode_chunk(&stray, b"stray"));
     let report = store.reindex().unwrap();
     assert_eq!(report.orphans_removed, 1);
     assert!(memory.raw(NS, &stray).is_none());
     assert_eq!(get(&store, "k"), Some(value));
+}
+
+/// A backend that, like the Secret Service, recovers each entry's account from the stored blob,
+/// so a head in a format kc can't frame-decode is absent from `accounts()`. The in-memory
+/// backend enumerates native account names and so can't exercise this path.
+struct FrameAwareBackend {
+    entries: Mutex<BTreeMap<String, Vec<u8>>>,
+}
+
+impl Backend for FrameAwareBackend {
+    fn describe(&self) -> String {
+        "frame-aware test backend".into()
+    }
+    fn may_leave_empty_entries(&self) -> bool {
+        true
+    }
+    fn get(&self, account: &str) -> Result<Option<Zeroizing<Vec<u8>>>> {
+        Ok(self
+            .entries
+            .lock()
+            .unwrap()
+            .get(account)
+            .map(|blob| Zeroizing::new(blob.clone())))
+    }
+    fn set(&self, account: &str, blob: &[u8]) -> Result<()> {
+        self.entries
+            .lock()
+            .unwrap()
+            .insert(account.to_owned(), blob.to_vec());
+        Ok(())
+    }
+    fn delete(&self, account: &str) -> Result<bool> {
+        Ok(self.entries.lock().unwrap().remove(account).is_some())
+    }
+    fn exists(&self, account: &str) -> Result<bool> {
+        Ok(self.entries.lock().unwrap().contains_key(account))
+    }
+    fn accounts(&self) -> Result<Vec<String>> {
+        // The account comes from the blob frame, so an unframed head is absent (like Linux).
+        Ok(self
+            .entries
+            .lock()
+            .unwrap()
+            .values()
+            .filter_map(|blob| account_of(blob))
+            .collect())
+    }
+    fn purge(&self) -> Result<usize> {
+        let mut entries = self.entries.lock().unwrap();
+        let removed = entries.len();
+        entries.clear();
+        Ok(removed)
+    }
+    fn read_foreign(
+        &self,
+        _service: &str,
+        _account: Option<&str>,
+    ) -> Result<crate::backend::ForeignItem> {
+        unreachable!("read_foreign is not exercised by this test")
+    }
+}
+
+#[test]
+fn reindex_keeps_an_unreadable_head_and_its_companions() {
+    // The Secret Service recovers accounts from the blob, so a head another program wrote (not in
+    // kc's framed format) is absent from accounts(). reindex must not then delete that head's
+    // previous value and chunks as if the head were gone.
+    let dir = tempfile::tempdir().unwrap();
+    let backend = Arc::new(FrameAwareBackend {
+        entries: Mutex::new(BTreeMap::new()),
+    });
+    backend
+        .set("item:k", &encode_inline("item:k", b"fake-current"))
+        .unwrap();
+    backend
+        .set(
+            "item:k#prev",
+            &encode_inline("item:k#prev", b"fake-previous"),
+        )
+        .unwrap();
+    backend
+        .set("item:k#7.0", &encode_chunk("item:k#7.0", b"fake-chunk"))
+        .unwrap();
+    // Another program clobbers the head with its own, unframed value.
+    backend.set("item:k", b"foreign-unframed-value").unwrap();
+    assert!(
+        !backend.accounts().unwrap().contains(&"item:k".to_owned()),
+        "the unframed head is absent from accounts()"
+    );
+
+    let store = Store::with_backend(StoreConfig::new(NS, dir.path()), backend.clone()).unwrap();
+    let report = store.reindex().unwrap();
+    assert_eq!(report.orphans_removed, 0, "nothing of k should be deleted");
+    assert!(backend.exists("item:k").unwrap());
+    assert!(
+        backend.exists("item:k#prev").unwrap(),
+        "previous value kept"
+    );
+    assert!(backend.exists("item:k#7.0").unwrap(), "chunk kept");
 }

@@ -24,9 +24,10 @@ pub const ENV_LOCK_DIR: &str = "KC_LOCK_DIR";
 /// Default largest stored blob (format tag included). Values that don't fit are chunked.
 pub const DEFAULT_MAX_BLOB_LEN: usize = 2048;
 
-/// Smallest accepted [`StoreConfig::max_blob_len`]: room for the largest chunk manifest
-/// (134 bytes), so that no stored blob ever exceeds the limit. Tests use it to force chunking.
-pub const MIN_MAX_BLOB_LEN: usize = 160;
+/// Smallest accepted [`StoreConfig::max_blob_len`]: room for the largest manifest head, which
+/// is the account frame (a name at the length limit plus `#prev`) plus the manifest JSON — about
+/// 275 bytes — so that no stored blob ever exceeds the limit. Tests use it to force chunking.
+pub const MIN_MAX_BLOB_LEN: usize = 288;
 
 /// Windows Credential Manager refuses credential blobs larger than this (`CRED_MAX_CREDENTIAL_BLOB_SIZE`).
 pub const WINDOWS_MAX_BLOB_LEN: usize = 2560;

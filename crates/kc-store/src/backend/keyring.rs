@@ -148,6 +148,20 @@ impl Backend for KeyringBackend {
         self.call("list", sys::accounts)
     }
 
+    fn purge(&self) -> Result<usize> {
+        self.call("purge", move |inner| {
+            let mut removed = 0;
+            for account in sys::accounts(inner)? {
+                match inner.entry(&account)?.delete_credential() {
+                    Ok(()) => removed += 1,
+                    Err(keyring_core::Error::NoEntry) => {}
+                    Err(err) => return Err(sys::map_err(err, "purge")),
+                }
+            }
+            Ok(removed)
+        })
+    }
+
     fn read_foreign(&self, service: &str, account: Option<&str>) -> Result<ForeignItem> {
         let service = service.to_owned();
         let account = account.map(str::to_owned);

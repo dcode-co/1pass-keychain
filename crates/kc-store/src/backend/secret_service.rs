@@ -185,21 +185,25 @@ impl Backend for SecretServiceBackend {
             let spec = HashMap::from([("service", inner.namespace.as_str())]);
             let mut accounts = Vec::new();
             for path in inner.search(&spec, "list")? {
-                // Errors propagate: an incomplete list would make garbage collection delete
-                // live chunks.
-                let attributes = inner.item_attributes(&path, "list")?;
-                // An item in the namespace without a username wasn't written by kc.
-                if let Some(account) = attributes.get("username") {
-                    accounts.push(account.clone());
+                // The account is recovered from the stored blob (a `GetSecret` method call),
+                // never from a D-Bus property. Errors propagate: an incomplete list would make
+                // garbage collection delete live chunks. An empty placeholder, or an item some
+                // other program wrote, has no kc frame and so no account; it isn't one of ours.
+                let blob = inner.read_secret(&path, "list")?;
+                if let Some(account) = crate::encoding::account_of(&blob) {
+                    accounts.push(account);
                 }
             }
             Ok(accounts)
         })
     }
 
-    /// Supported shapes: attributes `{service, account}` (what `secret-tool store` and most
-    /// scripts write), `{service, username}` (keyring-rs, Python keyring), or, without an
-    /// account, `{service}` alone when exactly one item has it.
+    /// Finds the entry by its attributes with `SearchItems` (a method call); the Secret Service
+    /// matches on `{service, account}` (what `secret-tool store` and most scripts write) and
+    /// `{service, username}` (keyring-rs, Python keyring). Without an account, the single item
+    /// with the service. kc never reads the item's attributes back (that is a D-Bus property
+    /// call, which can crash gnome-keyring), so the adopted account is only known when it was
+    /// given, and an ambiguous match is reported by count rather than by listing accounts.
     fn read_foreign(&self, service: &str, account: Option<&str>) -> Result<ForeignItem> {
         let service = service.to_owned();
         let account = account.map(str::to_owned);
@@ -223,28 +227,35 @@ impl Backend for SecretServiceBackend {
             match found.as_slice() {
                 [] => Err(not_found(&service, account.as_deref())),
                 [path] => {
-                    let attributes = inner.item_attributes(path, "adopt")?;
                     let value = inner.read_secret(path, "adopt")?;
                     Ok(ForeignItem {
-                        account: account_attribute(&attributes),
+                        // Known only when the caller gave it: reading it back is a property call.
+                        account: account.clone(),
                         value,
                     })
                 }
-                many => {
-                    let mut candidates = Vec::with_capacity(many.len());
-                    for path in many {
-                        let attributes = inner.item_attributes(path, "adopt")?;
-                        candidates.push(account_attribute(&attributes).map_or_else(
-                            || "(no account attribute)".to_owned(),
-                            |account| format!("account={account}"),
-                        ));
-                    }
-                    Err(StoreError::Ambiguous {
-                        service: service.clone(),
-                        candidates,
-                    })
-                }
+                many => Err(StoreError::Ambiguous {
+                    service: service.clone(),
+                    // The object paths, not the accounts: listing accounts would need a property
+                    // read. The count tells the user to pass `--account` to pick one.
+                    candidates: many.iter().map(|path| path.as_str().to_owned()).collect(),
+                }),
             }
+        })
+    }
+
+    fn purge(&self) -> Result<usize> {
+        self.call("purge", move |inner| {
+            // By path: no account names, so no secrets are read. A locked item surfaces as
+            // `Locked` from `search`, same as everywhere else.
+            let paths = inner.search(
+                &HashMap::from([("service", inner.namespace.as_str())]),
+                "purge",
+            )?;
+            for path in &paths {
+                inner.delete_path(path, "purge")?;
+            }
+            Ok(paths.len())
         })
     }
 }
@@ -335,19 +346,6 @@ impl Inner {
             .map_err(|err| ss_error(err, op, self.timeout))?;
         item.set_secret(secret, CONTENT_TYPE)
             .map_err(|err| change_error(classify_ss(&err), err.to_string(), op, self.timeout))
-    }
-
-    fn item_attributes(
-        &self,
-        path: &OwnedObjectPath,
-        op: &'static str,
-    ) -> Result<HashMap<String, String>> {
-        let ss = self.ss();
-        let item = ss
-            .get_item_by_path(path.clone())
-            .map_err(|err| ss_error(err, op, self.timeout))?;
-        item.get_attributes()
-            .map_err(|err| ss_error(err, op, self.timeout))
     }
 
     /// The object path of the default collection, where new items go. Resolved with the
@@ -489,14 +487,6 @@ fn open_plain_session(conn: &zbus::blocking::Connection) -> zbus::Result<OwnedOb
     )?;
     let (_output, session): (OwnedValue, OwnedObjectPath) = reply.body().deserialize()?;
     Ok(session)
-}
-
-fn account_attribute(attributes: &HashMap<String, String>) -> Option<String> {
-    ["account", "username", "user"]
-        .iter()
-        .find_map(|key| attributes.get(*key))
-        .filter(|value| !value.is_empty())
-        .cloned()
 }
 
 fn locked(what: String) -> StoreError {

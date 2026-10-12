@@ -36,9 +36,17 @@ pub(crate) trait Backend: Send + Sync {
     fn delete(&self, account: &str) -> Result<bool>;
     /// Whether an entry exists, without reading its secret where the platform allows.
     fn exists(&self, account: &str) -> Result<bool>;
-    /// Every account in the namespace, found with the keychain's own search. Fails rather than
-    /// return an incomplete list (garbage collection relies on it).
+    /// Every account in the namespace. Fails rather than return an incomplete list (garbage
+    /// collection relies on it). Used only by `reindex` and `verify`.
+    ///
+    /// On the Secret Service the account of each item is recovered from the stored blob
+    /// (`GetSecret`, a method call), never from `org.freedesktop.DBus.Properties`: reading a
+    /// property of a client that has disconnected crashes gnome-keyring. So this reads every
+    /// secret in the namespace; `list`, `delete` and `purge` avoid it for that reason.
     fn accounts(&self) -> Result<Vec<String>>;
+    /// Deletes every entry in the namespace and returns how many. For `purge`: it needs no
+    /// account names, so on the Secret Service it reads no secrets (search by path, delete).
+    fn purge(&self) -> Result<usize>;
     /// Reads an entry that some other program wrote (`kc adopt`).
     fn read_foreign(&self, service: &str, account: Option<&str>) -> Result<ForeignItem>;
     /// Whether creating an entry can be cut off half-way, leaving it empty (the Secret Service

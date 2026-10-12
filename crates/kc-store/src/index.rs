@@ -62,19 +62,6 @@ pub struct ItemInfo {
     pub updated_at: Option<SystemTime>,
 }
 
-impl ItemInfo {
-    /// Metadata for an item the index knows nothing about.
-    pub(crate) fn unknown(name: &str) -> Self {
-        ItemInfo {
-            name: name.to_owned(),
-            kind: ItemKind::Text,
-            origin: Origin::Unknown,
-            created_at: None,
-            updated_at: None,
-        }
-    }
-}
-
 /// On-disk metadata of one item.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Record {
