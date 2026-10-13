@@ -57,6 +57,7 @@ impl Conflicts {
 #[derive(Debug, Default)]
 pub(crate) struct Applied {
     pub results: Vec<ItemResult>,
+    pub confirmation_denied: bool,
     /// The first keychain error, to show once, with its exit code: 4 when the keychain is
     /// unavailable, 5 when it wants a person to confirm, 1 otherwise.
     pub keychain_error: Option<(String, i32)>,
@@ -70,6 +71,7 @@ pub(crate) struct Applied {
 impl Applied {
     /// 0 if everything is here, the keychain error's code if the keychain failed, else 8.
     pub fn exit_code(&self) -> i32 {
+        if self.confirmation_denied { return exit::INTERACTION_REQUIRED; }
         match &self.keychain_error {
             Some((_, code)) => *code,
             None => local_exit_code(&self.results),
@@ -183,6 +185,11 @@ pub(crate) fn apply_items_locked<H: Host>(
                 }
                 status
             }
+            Err(Failure::SyncConfirmation(e)) => {
+                applied.confirmation_denied = true;
+                say!(ctx, "{e}");
+                ItemStatus::SkippedConflict
+            }
             Err(Failure::Cli(e)) => return Err(e),
         };
         let result = ItemResult {
@@ -206,6 +213,7 @@ pub(crate) fn apply_items_locked<H: Host>(
 }
 
 enum Failure {
+    SyncConfirmation(CliError),
     Store(StoreError),
     /// A prompt was cancelled, or a lock couldn't be taken.
     Cli(CliError),
@@ -251,8 +259,8 @@ fn apply_one<H: Host>(
     if value.len() > MAX_VALUE_LEN {
         return Ok(ItemStatus::Rejected(REJECT_TOO_LARGE));
     }
-    if conflicts != Conflicts::Policy(ConflictPolicy::Rename)
-        && let Some(status) = crate::sync::legacy(ctx, item, from_device)?
+    if let Some(status) = crate::sync::legacy(ctx, item, from_device, conflicts == Conflicts::Policy(ConflictPolicy::Overwrite))
+            .map_err(|e| if e.code == exit::INTERACTION_REQUIRED { Failure::SyncConfirmation(e) } else { Failure::Cli(e) })?
     {
         return Ok(status);
     }

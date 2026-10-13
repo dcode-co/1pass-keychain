@@ -308,7 +308,7 @@ fn scan_one<H: Host>(ctx: &mut Ctx<'_, H>, s: &mut State, name: &str) -> Result<
         return Ok(());
     }
     let parents = vec![item.head];
-    let (r, v) = prepare_local(
+    let prepared = prepare_local(
         ctx,
         s,
         name,
@@ -318,7 +318,16 @@ fn scan_one<H: Host>(ctx: &mut Ctx<'_, H>, s: &mut State, name: &str) -> Result<
         parents,
         Vid::random(),
         false,
-    )?;
+    );
+    let (r, v) = match prepared {
+        Ok(value) => value,
+        Err(error) if error.code == 8 && s.capacity_blocked => {
+            s.items.get_mut(name).unwrap().conflict = true;
+            log(ctx, tr!("Sync storage is full; review pending items before retrying."))?;
+            return s.save(&ctx.state);
+        }
+        Err(error) => return Err(error),
+    };
     put_blob(ctx, &v.slot, kind, &value)?;
     finish_local(ctx, s, &r, &v, false)?;
     clear_intent(ctx, s)
@@ -369,7 +378,14 @@ pub(super) fn resolve_value<H: Host>(
     parents.sort();
     parents.dedup();
     let fp = current(ctx, name)?.map_or(Fp([0; 32]), |v| v.2);
-    let (r, v) = prepare_local(ctx, s, name, fp, kind, value, parents, Vid::random(), true)?;
+    let (r, v) = match prepare_local(ctx, s, name, fp, kind, value, parents, Vid::random(), true) {
+        Ok(prepared) => prepared,
+        Err(error) if error.code == 8 && s.capacity_blocked => {
+            log(ctx, tr!("Sync storage is full; review pending items before retrying."))?;
+            return s.save(&ctx.state);
+        }
+        Err(error) => return Err(error),
+    };
     ctx.store.set(name, value, map::kind(kind), Origin::Local)?;
     interrupted(ctx)?;
     put_blob(ctx, &v.slot, kind, value)?;
@@ -543,7 +559,7 @@ pub(super) fn queue(s: &mut State, peer: &str, message: Control) {
 }
 pub(crate) fn recover<H: Host>(ctx: &mut Ctx<'_, H>, s: &mut State) -> Result<()> {
     let Some(journal) = s.journal.clone() else {
-        return Ok(());
+        return collect_orphan_snapshots(ctx, s);
     };
     let record: Intent = private_get(ctx, &journal.record)?;
     match record {
@@ -614,5 +630,20 @@ pub(crate) fn recover<H: Host>(ctx: &mut Ctx<'_, H>, s: &mut State) -> Result<()
             }
         }
     }
-    clear_intent(ctx, s)
+    clear_intent(ctx, s)?;
+    collect_orphan_snapshots(ctx, s)
+}
+
+fn collect_orphan_snapshots<H: Host>(ctx: &Ctx<'_, H>, s: &mut State) -> Result<()> {
+    // Called after journal recovery: its in-flight snapshot must survive until then.
+    let orphaned = s.slots.keys().filter(|slot| {
+        slot.starts_with("sync/snapshot/")
+            && !s.versions.values().any(|v| &v.slot == *slot)
+            && !s.offers.iter().any(|o| snapshot_slot(o.vid) == **slot)
+            && !s.peers.keys().any(|peer| s.outbox.pending(&PeerId(peer.clone()))
+                .any(|id| snapshot_slot(map::wire_vid(id.new_vid)) == **slot))
+    }).cloned().collect::<Vec<_>>();
+    for slot in orphaned { release(s, &slot); }
+    if !s.gc.is_empty() { s.cleanup(ctx)?; }
+    Ok(())
 }

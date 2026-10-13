@@ -31,7 +31,9 @@ pub(crate) fn receive<H: Host>(ctx: &mut Ctx<'_, H>, peer: &str, message: &SyncM
             known_generation,
         } => {
             let name = name.as_str();
-            if *known_generation < s.generations.generation(name) {
+            if !p.enabled || s.limiter.is_tripped(&PeerId(peer.into())) {
+                log(ctx, tr!("Ignored a sync offer from disabled or blocked peer {peer}.", peer = super::actions::label(ctx, peer)?))?;
+            } else if *known_generation < s.generations.generation(name) {
                 log(
                     ctx,
                     tr!("Ignored a stale sync offer for {name}.", name = name),
@@ -45,7 +47,7 @@ pub(crate) fn receive<H: Host>(ctx: &mut Ctx<'_, H>, peer: &str, message: &SyncM
                 && value.expose().len() <= 200 * 1024
                 && !value.expose().is_empty()
             {
-                let version = Version {
+                let mut version = Version {
                     name: name.into(),
                     vid: *vid,
                     parents: vec![],
@@ -79,6 +81,15 @@ pub(crate) fn receive<H: Host>(ctx: &mut Ctx<'_, H>, peer: &str, message: &SyncM
                         },
                     );
                 } else if !s.candidates.contains_key(&version.slot) {
+                    let category = if s.items.get(name).is_some_and(|i| i.conflict) {
+                        CandidateKind::Conflict
+                    } else {
+                        CandidateKind::Proposal
+                    };
+                    if existing.is_some() {
+                        let record: VidRecord = private_get(ctx, &record_slot(name, *vid))?;
+                        version.parents = record.parents.into_iter().map(map::wire_vid).collect();
+                    }
                     let times = s.proposals_today.entry(peer.into()).or_default();
                     times.retain(|at| (ctx.host.now() as i128) - (*at as i128) < 86400);
                     let allowed = times.len() < ctx.settings.sync.max_proposals_per_day;
@@ -89,12 +100,15 @@ pub(crate) fn receive<H: Host>(ctx: &mut Ctx<'_, H>, peer: &str, message: &SyncM
                             peer,
                             version,
                             *known_generation,
-                            CandidateKind::Proposal,
+                            category,
                             value.expose(),
                             false,
                             false,
                         )?;
                     if stored {
+                        if existing.is_none() {
+                            s.unbound.insert(format!("{}:{}", name, vid_key(*vid)));
+                        }
                         s.proposals_today
                             .entry(peer.into())
                             .or_default()
@@ -213,10 +227,16 @@ pub(crate) fn receive<H: Host>(ctx: &mut Ctx<'_, H>, peer: &str, message: &SyncM
                 } else {
                     s.deferred.remove(&delivery);
                 }
-                let matched = s
-                    .outbox
-                    .ack(&PeerId(peer.into()), &map::id(id), map::ack(*result));
-                if matched && *result == AckResult::StaleGeneration {
+                s.outbox.ack(&PeerId(peer.into()), &map::id(id), map::ack(*result));
+                if *result == AckResult::StaleGeneration
+                    && s.generations.known_generation(&PeerId(peer.into()), id.name.as_str()) <= id.generation
+                {
+                    // The ACK carries the rejected (old) generation, not the receiver's
+                    // new one. Invalidate only that still-current grant; a reordered ACK
+                    // must not revoke a newer Accept. Re-offering learns the actual epoch.
+                    if s.generations.outgoing_generation(&PeerId(peer.into()), id.name.as_str()) == Some(id.generation) {
+                        invalidate_generation(&mut s, peer, id.name.as_str())?;
+                    }
                     s.peers
                         .get_mut(peer)
                         .unwrap()
@@ -260,6 +280,19 @@ pub(crate) fn receive<H: Host>(ctx: &mut Ctx<'_, H>, peer: &str, message: &SyncM
     }
     super::transport::collect_snapshots(&mut s);
     s.cleanup(ctx)
+}
+// The Phase 1 core API cannot revoke an accepted grant at the same generation.
+// Preserve the known receiver epoch while clearing its grant in the persisted adapter.
+fn invalidate_generation(s: &mut State, peer: &str, name: &str) -> Result<()> {
+    let mut generations = serde_json::to_value(&s.generations).map_err(|_| state_error())?;
+    let accepted = generations.get_mut("remote")
+        .and_then(|remote| remote.get_mut(peer))
+        .and_then(|names| names.get_mut(name))
+        .and_then(|grant| grant.get_mut("accepted"))
+        .ok_or_else(state_error)?;
+    *accepted = serde_json::Value::Bool(false);
+    s.generations = serde_json::from_value(generations).map_err(|_| state_error())?;
+    Ok(())
 }
 fn ack(s: &mut State, peer: &str, c: &Change, result: AckResult) {
     queue(
@@ -413,9 +446,13 @@ fn change_received<H: Host>(
             ..
         } => {
             if let Some(fp) = fp
-                && !remember(ctx, name, c.new_vid, fp, &c.parents)?
+                && !matches!(remember(ctx, name, c.new_vid, fp, &c.parents), Ok(true))
             {
-                return Err(state_error());
+                s.peers.get_mut(peer).unwrap().quarantine.insert(name.into());
+                s.receipts.insert(delivery, (AckResult::Rejected, ctx.host.now().saturating_add(3 * 86400)));
+                ack(s, peer, c, AckResult::Rejected);
+                log(ctx, tr!("Sync {name}: {result}.", name = name, result = tr!("declined")))?;
+                return s.save(&ctx.state);
             }
             let item = s.items.get_mut(name).unwrap();
             item.head = map::wire_vid(head);
@@ -487,7 +524,7 @@ pub(super) fn preserve_mine<H: Host>(
             false,
             false,
         )? {
-            return Err(capacity());
+            log(ctx, tr!("Sync storage is full; review pending items before retrying."))?;
         }
     }
     Ok(())
@@ -533,7 +570,9 @@ pub(super) fn store_candidate<H: Host>(
         v.slot.push_str(&format!("/{}", hex(&Vid::random().0[..4])));
     }
     if let Some(old) = s.candidates.get(&v.slot) {
-        if old.version.parents != v.parents || old.retire != retire {
+        let promote = old.category == CandidateKind::Proposal
+            && category != CandidateKind::Proposal && !invalid_binding;
+        if (!promote && old.version.parents != v.parents) || old.retire != retire {
             return Ok(false);
         }
         if !retire {
@@ -542,9 +581,15 @@ pub(super) fn store_candidate<H: Host>(
                 return Ok(false);
             }
         }
-        if category == CandidateKind::Conflict {
-            s.candidates.get_mut(&v.slot).unwrap().category = category;
-            s.slots.insert(v.slot.clone(), SlotKind::ConflictCandidate);
+        if promote || category == CandidateKind::Conflict {
+            let old = s.candidates.get_mut(&v.slot).unwrap();
+            old.category = category;
+            old.version.parents = v.parents;
+            old.version.lineage = v.lineage;
+            old.generation = generation;
+            s.slots.insert(v.slot.clone(), if category == CandidateKind::Conflict {
+                SlotKind::ConflictCandidate
+            } else { SlotKind::Held });
         }
         return Ok(true);
     }
@@ -612,6 +657,7 @@ pub(crate) fn legacy<H: Host>(
     ctx: &mut Ctx<'_, H>,
     item: &kc_proto::payload::Item,
     from: &str,
+    overwrite: bool,
 ) -> Result<Option<kc_proto::ItemStatus>> {
     let mut s = State::load(&ctx.state)?;
     if !s.items.contains_key(item.name.as_str()) {
@@ -658,16 +704,22 @@ pub(crate) fn legacy<H: Host>(
         true,
     )? {
         s.cleanup(ctx)?;
+        crate::commands::say!(ctx, "{}", tr!("Sync item held; run `kc sync review`."));
         return Ok(Some(kc_proto::ItemStatus::SkippedConflict));
     }
     s.save(&ctx.state)?;
-    if ctx.interactive() && !s.frozen {
-        human(ctx, &tr!("Confirm sync changes ({n} items).", n = 1))?;
+    if overwrite && ctx.interactive() && !s.frozen {
+        if let Err(error) = human(ctx, &tr!("Replace {name} with the value from {device}", name = name, device = from)) {
+            s.cleanup(ctx)?;
+            crate::commands::say!(ctx, "{}", tr!("Sync item held; run `kc sync review`."));
+            return Err(error);
+        }
         let c = s.candidates[&slot].clone();
         if transaction::accept(ctx, &mut s, &c)? {
             return Ok(Some(kc_proto::ItemStatus::Stored));
         }
     }
     s.cleanup(ctx)?;
+    crate::commands::say!(ctx, "{}", tr!("Sync item held; run `kc sync review`."));
     Ok(Some(kc_proto::ItemStatus::SkippedConflict))
 }

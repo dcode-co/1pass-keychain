@@ -130,6 +130,19 @@ pub(super) async fn inbox<H: Host>(ctx: &mut Ctx<'_, H>, args: InboxArgs) -> Res
             .by_fingerprint(&opened.sender_fp)
             .map_or_else(|| opened.sender_fp.short(), |p| p.label.to_string());
         let until = opened.keep_seen_until();
+        if seen.contains(&opened.msg_id) {
+            say!(
+                ctx,
+                "{}",
+                tr!(
+                    "A message was dropped: {error} (or one this device stored before but couldn't delete).",
+                    error = InboxError::Replay
+                )
+            );
+            outcome.failed(InboxError::Replay.exit_code());
+            delete(ctx, &relay, &inbox_id, &owner, &message.msg_id).await;
+            continue;
+        }
         let items = match &opened.body {
             inbox::Body::Sync(message_body) => {
                 crate::sync::receive(ctx, &opened.sender_fp.to_hex(), message_body)?;
@@ -138,22 +151,7 @@ pub(super) async fn inbox<H: Host>(ctx: &mut Ctx<'_, H>, args: InboxArgs) -> Res
                 delete(ctx, &relay, &inbox_id, &owner, &message.msg_id).await;
                 continue;
             }
-            inbox::Body::Items(items) => {
-                if seen.contains(&opened.msg_id) {
-                    say!(
-                        ctx,
-                        "{}",
-                        tr!(
-                            "A message was dropped: {error} (or one this device stored before but couldn't delete).",
-                            error = InboxError::Replay
-                        )
-                    );
-                    outcome.failed(InboxError::Replay.exit_code());
-                    delete(ctx, &relay, &inbox_id, &owner, &message.msg_id).await;
-                    continue;
-                }
-                items
-            }
+            inbox::Body::Items(items) => items,
         };
         let names: Vec<&str> = items.iter().map(|i| i.name.as_str()).collect();
         let (n, names) = (names.len(), names.join(", "));

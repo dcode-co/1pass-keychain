@@ -13,7 +13,7 @@ fn human(answers: Vec<Answer>) -> Run {
     run.local_auth.push_back(LocalAuthOutcome::Confirmed);
     run
 }
-fn state(d: &Device<MemoryRelay>) -> Value {
+fn state<N: common::Net>(d: &Device<N>) -> Value {
     serde_json::from_slice(&std::fs::read(d.dir.path().join("sync.json")).unwrap()).unwrap()
 }
 fn head(d: &Device<MemoryRelay>) -> Vid {
@@ -244,12 +244,19 @@ async fn noninteractive_add_review_and_denied_local_confirmation_exit_five() {
         vec!["sync", "add", "KEY"],
         vec!["sync", "review"],
         vec!["sync", "unfreeze"],
+        vec!["sync", "resolve", "KEY", "--keep", "mine"],
+        vec!["sync", "restore-checkpoint", "KEY"],
+        vec!["sync", "rm", "KEY"],
     ] {
+        let before = std::fs::read(a.dir.path().join("sync.json")).ok();
         a.run(&args, Run::agent()).await.expect(5);
+        assert_eq!(std::fs::read(a.dir.path().join("sync.json")).ok(), before);
+        assert_eq!(a.value("KEY").unwrap(), b"fake");
     }
     let mut denied = Run::human(vec![]);
     denied.local_auth.push_back(LocalAuthOutcome::Denied);
     a.run(&["sync", "add", "KEY"], denied).await.expect(5);
+    assert!(!a.dir.path().join("sync.json").exists());
     a.run(&["sync", "add", "KEY"], Run::human(vec![]))
         .await
         .expect(5);
@@ -568,7 +575,7 @@ async fn rejected_held_change_is_not_recreated_by_retransmission() {
     };
     post(&a, &b, &relay, message.clone()).await;
     b.run(&["inbox"], Run::agent()).await.expect(8);
-    b.run(&["sync", "review"], Run::human(vec![Answer::Select(1)]))
+    b.run(&["sync", "review"], human(vec![Answer::Select(1)]))
         .await
         .expect(0);
     post(&a, &b, &relay, message).await;
@@ -591,9 +598,14 @@ async fn legacy_overwrite_flag_and_code_receive_cannot_bypass_local_confirmation
     a.run(&["send", "KEY", "--to", "bravo"], Run::agent())
         .await
         .expect(0);
-    b.run(&["inbox", "--on-conflict", "overwrite"], Run::agent())
-        .await
-        .expect(8);
+    let before = std::fs::read(b.dir.path().join("sync.json")).unwrap();
+    b.run(&["inbox", "--on-conflict", "overwrite"], Run::agent()).await.expect(5);
+    assert_eq!(std::fs::read(b.dir.path().join("sync.json")).unwrap(), before);
+    b.run(&["receive", "--on-conflict", "overwrite"], Run::agent()).await.expect(5);
+    assert_eq!(std::fs::read(b.dir.path().join("sync.json")).unwrap(), before);
+    b.run(&["inbox", "--on-conflict", "overwrite"], Run::human(vec![Answer::Yes]))
+        .await.expect(5);
+    assert_eq!(state(&b)["candidates"].as_object().unwrap().len(), 1);
     assert_eq!(b.value("KEY").unwrap(), b"fake-initial-secret");
     b.run(&["sync", "review"], human(vec![Answer::Select(0)]))
         .await
@@ -610,13 +622,13 @@ async fn legacy_overwrite_flag_and_code_receive_cannot_bypass_local_confirmation
     let (rx, tx) = transfer(
         &b,
         &["receive", "--on-conflict", "overwrite"],
-        Run::agent(),
+        Run::human(vec![Answer::Yes]),
         &a,
         &["send", "KEY"],
         |code| Run::human(vec![Answer::Text(code), Answer::Yes]),
     )
     .await;
-    rx.expect(8);
+    rx.expect(5);
     tx.expect(8);
     assert_eq!(b.value("KEY").unwrap(), b"fake-legacy-terminal");
 }
@@ -704,7 +716,7 @@ async fn rejecting_a_proposal_blocks_retries_but_an_explicit_reoffer_is_fresh() 
         .await
         .expect(8);
     pump(&a, &b).await;
-    b.run(&["sync", "review"], Run::human(vec![Answer::Select(1)]))
+    b.run(&["sync", "review"], human(vec![Answer::Select(1)]))
         .await
         .expect(0);
     pump(&a, &b).await;
@@ -720,4 +732,447 @@ async fn rejecting_a_proposal_blocks_retries_but_an_explicit_reoffer_is_fresh() 
         .expect(0);
     pump(&a, &b).await;
     assert_eq!(head(&a), head(&b));
+}
+
+fn save_state(d: &Device<MemoryRelay>, s: &Value) {
+    std::fs::write(d.dir.path().join("sync.json"), serde_json::to_vec_pretty(s).unwrap()).unwrap();
+}
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+fn fp_slot(name: &str, vid: Vid) -> String {
+    use sha2::{Digest, Sha256};
+    format!("sync/fp/{}/{}", hex(&Sha256::digest(name.as_bytes())), hex(&vid.0))
+}
+fn offer_message(name: &str, vid: Vid, value: &[u8], generation: u64) -> SyncMsg {
+    SyncMsg::Offer {
+        name: ItemName::new(name).unwrap(), vid, lineage: vec![],
+        kind: kc_proto::sync::ItemKind::Text,
+        value: SecretBytes::from_slice(value), known_generation: generation,
+    }
+}
+fn change_message(name: &str, vid: Vid, parent: Vid, value: &[u8]) -> SyncMsg {
+    SyncMsg::Changes { changes: vec![Change {
+        name: ItemName::new(name).unwrap(), generation: 1, new_vid: vid,
+        parents: vec![parent], lineage: vec![parent],
+        op: Op::Put { kind: kc_proto::sync::ItemKind::Text, value: SecretBytes::from_slice(value) },
+        approval_ref: None,
+    }] }
+}
+fn confirmations(out: &common::Output) -> Vec<&str> {
+    out.prompts.iter().filter_map(|p| p.strip_prefix("local confirmation: ")).collect()
+}
+
+#[tokio::test]
+async fn failed_hello_delivery_is_retried_on_next_sync() {
+    let (a, b, relay) = devices().await;
+    let fault = common::fault_relay::FaultRelay::new(relay.clone());
+    let a = Device { name: a.name, dir: a.dir, keychain: a.keychain, net: fault.clone(), env: a.env };
+    a.set("KEY", b"fake-hello").await;
+    fault.fail_post.store(true, std::sync::atomic::Ordering::SeqCst);
+    a.run(&["sync", "add", "KEY", "--peers", "bravo"], human(vec![])).await.expect(6);
+    let peer = b.peers().find("alpha").unwrap().fingerprint.to_hex();
+    let remote = a.peers().find("bravo").unwrap().fingerprint.to_hex();
+    assert_eq!(state(&a)["peers"][&remote]["hello_sent"], false);
+    let (id, owner) = b.inbox_credentials();
+    assert!(relay.list_messages(&id, &owner, std::time::Duration::ZERO).await.unwrap().messages.is_empty());
+    a.run(&["sync"], Run::agent()).await.expect(8);
+    assert_eq!(state(&a)["peers"][&remote]["hello_sent"], true);
+    assert_eq!(relay.list_messages(&id, &owner, std::time::Duration::ZERO).await.unwrap().messages.len(), 1);
+    b.run(&["inbox"], Run::agent()).await.expect(0);
+    assert_eq!(state(&b)["peers"][peer]["capable"], true);
+}
+
+#[tokio::test]
+async fn corrupt_sync_state_does_not_break_get_or_exec() {
+    let a = Device::new("alpha", MemoryRelay::new());
+    a.set("KEY", b"fake-independent").await;
+    std::fs::write(a.dir.path().join("sync.json"), b"broken json").unwrap();
+    a.run(&["get", "KEY", "--fingerprint"], Run::agent()).await.expect(0);
+    a.run(&["exec", "--env", "KEY=KEY", "--", "true"], Run::agent()).await.expect(0);
+    assert_eq!(std::fs::read(a.dir.path().join("sync.json")).unwrap(), b"broken json");
+}
+
+#[tokio::test]
+async fn confirmation_reasons_name_actions_and_follow_selection() {
+    let a = Device::new("alpha", MemoryRelay::new());
+    for name in ["a", "b", "c", "d", "e", "f", "g"] { a.set(name, b"fake").await; }
+    let mut denied = Run::human(vec![Answer::Multi(vec![0, 1, 2, 3, 4, 5, 6])]);
+    denied.local_auth.push_back(LocalAuthOutcome::Denied);
+    let out = a.run(&["sync", "add"], denied).await;
+    out.expect(5);
+    assert!(out.prompts[0].contains("Select sync items"));
+    assert_eq!(confirmations(&out), vec!["kc sync add a, b, c and 4 more"]);
+    assert!(!a.dir.path().join("sync.json").exists());
+    let cases = [
+        (vec!["sync", "rm", "a", "b"], "kc sync rm a, b"),
+        (vec!["sync", "peer", "add", "bravo"], "kc sync peer add bravo"),
+        (vec!["sync", "peer", "rm", "bravo"], "kc sync peer rm bravo"),
+        (vec!["sync", "resolve", "a", "--keep", "mine"], "Resolve a: keep mine"),
+        (vec!["sync", "restore-checkpoint", "a"], "Restore a to its checkpoint"),
+        (vec!["sync", "unfreeze"], "Unfreeze sync"),
+        (vec!["sync", "status", "--confirm-checkpoint", "a"], "Confirm the current value of a as its checkpoint"),
+    ];
+    for (args, expected) in cases {
+        let out = a.run(&args, Run::human(vec![])).await;
+        out.expect(5);
+        assert_eq!(confirmations(&out), vec![expected]);
+        assert!(!a.dir.path().join("sync.json").exists());
+    }
+}
+
+#[tokio::test]
+async fn review_accept_and_reject_share_one_confirmation_and_denial_changes_nothing() {
+    let (a, b, relay) = devices().await;
+    for name in ["A", "B"] {
+        post(&a, &b, &relay, offer_message(name, Vid::random(), b"fake-review", 0)).await;
+    }
+    b.run(&["inbox"], Run::agent()).await.expect(8);
+    let before = std::fs::read(b.dir.path().join("sync.json")).unwrap();
+    let mut denied = Run::human(vec![Answer::Select(0), Answer::Select(1)]);
+    denied.local_auth.push_back(LocalAuthOutcome::Denied);
+    let out = b.run(&["sync", "review"], denied).await;
+    out.expect(5);
+    assert_eq!(confirmations(&out).len(), 1);
+    assert!(confirmations(&out)[0].contains("from alpha; reject"));
+    assert_eq!(std::fs::read(b.dir.path().join("sync.json")).unwrap(), before);
+    assert!(b.value("A").is_none() && b.value("B").is_none());
+    assert!(state(&b)["items"].as_object().unwrap().is_empty());
+    let out = b.run(&["sync", "review"], human(vec![Answer::Select(0), Answer::Select(1)])).await;
+    out.expect(0);
+    assert_eq!(confirmations(&out).len(), 1);
+    assert!(state(&b)["candidates"].as_object().unwrap().is_empty());
+    assert_eq!(state(&b)["items"].as_object().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn held_review_denied_and_agent_mutations_preserve_existing_state() {
+    let (a, b, _) = devices().await;
+    enroll(&a, &b).await;
+    a.set("KEY", b"fake-denied").await;
+    pump(&a, &b).await;
+    let before = std::fs::read(b.dir.path().join("sync.json")).unwrap();
+    let mut denied = Run::human(vec![Answer::Select(0)]);
+    denied.local_auth.push_back(LocalAuthOutcome::Denied);
+    b.run(&["sync", "review"], denied).await.expect(5);
+    assert_eq!(std::fs::read(b.dir.path().join("sync.json")).unwrap(), before);
+    for args in [vec!["sync", "resolve", "KEY", "--keep", "mine"], vec!["sync", "restore-checkpoint", "KEY"], vec!["sync", "rm", "KEY"]] {
+        b.run(&args, Run::agent()).await.expect(5);
+        assert_eq!(std::fs::read(b.dir.path().join("sync.json")).unwrap(), before);
+    }
+    assert_eq!(b.value("KEY").unwrap(), b"fake-initial-secret");
+    assert_eq!(state(&b)["candidates"].as_object().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn legacy_policies_hold_and_denial_continues_batch_then_one_l_replaces() {
+    for policy in [None, Some("skip"), Some("rename"), Some("overwrite")] {
+        let (a, b, _) = devices().await;
+        enroll(&a, &b).await;
+        a.store().set("KEY", b"fake-legacy-batch", kc_store::ItemKind::Text, kc_store::Origin::Local).unwrap();
+        a.set("OTHER", b"fake-other").await;
+        a.run(&["send", "KEY", "OTHER", "--to", "bravo"], Run::agent()).await.expect(0);
+        let mut args = vec!["inbox"];
+        if let Some(p) = policy { args.extend(["--on-conflict", p]); }
+        let mut run = Run::human(vec![Answer::Yes]);
+        if policy == Some("overwrite") { run.local_auth.push_back(LocalAuthOutcome::Denied); }
+        let out = b.run(&args, run).await;
+        out.expect(if policy == Some("overwrite") { 5 } else { 8 });
+        assert_eq!(b.value("OTHER").unwrap(), b"fake-other");
+        assert_eq!(b.value("KEY").unwrap(), b"fake-initial-secret");
+        assert_eq!(confirmations(&out).len(), usize::from(policy == Some("overwrite")));
+        assert!(b.value("KEY-2").is_none());
+        assert_eq!(state(&b)["candidates"].as_object().unwrap().len(), 1);
+        assert!(out.stderr.contains("run `kc sync review`"));
+    }
+    let (a, b, _) = devices().await;
+    enroll(&a, &b).await;
+    a.store().set("KEY", b"fake-inline", kc_store::ItemKind::Text, kc_store::Origin::Local).unwrap();
+    a.run(&["send", "KEY", "--to", "bravo"], Run::agent()).await.expect(0);
+    let out = b.run(&["inbox", "--on-conflict", "overwrite"], human(vec![Answer::Yes])).await;
+    out.expect(0);
+    assert_eq!(confirmations(&out), vec!["Replace KEY with the value from alpha"]);
+    assert_eq!(b.value("KEY").unwrap(), b"fake-inline");
+    assert!(state(&b)["candidates"].as_object().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn status_and_review_fingerprints_match_get_across_devices() {
+    let (a, b, _) = devices().await;
+    enroll(&a, &b).await;
+    let fp = a.run(&["get", "KEY", "--fingerprint"], Run::agent()).await.stdout_text();
+    for d in [&a, &b] {
+        let out = d.run(&["sync", "status", "--json"], Run::agent()).await;
+        let json: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(json["items"][0]["fingerprint"], fp.trim());
+    }
+    a.set("KEY", b"fake-fingerprint-new").await;
+    pump(&a, &b).await;
+    let proposed = a.run(&["get", "KEY", "--fingerprint"], Run::agent()).await.stdout_text();
+    let out = b.run(&["sync", "status", "--json"], Run::agent()).await;
+    let json: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["candidates"][0]["fingerprint"], proposed.trim());
+    let out = b.run(&["sync", "review"], Run::human(vec![Answer::Select(2)])).await;
+    assert!(out.prompts[0].contains(fp.trim()));
+    assert!(out.prompts[0].contains(proposed.trim()));
+}
+
+#[tokio::test]
+async fn offers_from_disabled_or_tripped_peers_are_logged_only() {
+    let (a, b, relay) = devices().await;
+    enroll(&a, &b).await;
+    b.run(&["sync", "peer", "rm", "alpha"], human(vec![])).await.expect(0);
+    post(&a, &b, &relay, offer_message("DISABLED", Vid::random(), b"fake-disabled", 0)).await;
+    b.run(&["inbox"], Run::agent()).await.expect(0);
+    assert!(state(&b)["candidates"].as_object().unwrap().is_empty());
+    b.run(&["sync", "peer", "add", "alpha"], human(vec![])).await.expect(8);
+    // Peer rm removed KEY's scope. Restore it through the explicit add operation.
+    b.run(&["sync", "add", "KEY", "--peers", "alpha"], human(vec![])).await.expect(8);
+    let parent = head(&b);
+    for _ in 0..6 {
+        let mut message = change_message("KEY", Vid::random(), parent, b"fake-trip");
+        if let SyncMsg::Changes { changes } = &mut message { changes[0].generation = 2; }
+        post(&a, &b, &relay, message).await;
+    }
+    b.run(&["inbox"], Run::agent()).await.expect(8);
+    let out = b.run(&["sync", "status", "--json"], Run::agent()).await;
+    let status: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(status["peers"][0]["breaker"], true);
+    let before = state(&b)["candidates"].clone();
+    post(&a, &b, &relay, offer_message("BLOCKED", Vid::random(), b"fake-blocked", 0)).await;
+    b.run(&["inbox"], Run::agent()).await.expect(8);
+    assert_eq!(state(&b)["candidates"], before);
+    assert!(std::fs::read_to_string(b.dir.path().join("sync.log")).unwrap().contains("Ignored a sync offer"));
+}
+
+#[tokio::test]
+async fn offer_during_conflict_is_a_candidate_and_review_cannot_discard_it() {
+    let (a, b, relay) = devices().await;
+    enroll(&a, &b).await;
+    a.set("KEY", b"fake-conflict-a").await;
+    b.set("KEY", b"fake-conflict-b").await;
+    pump(&a, &b).await;
+    let before = state(&b)["candidates"].as_object().unwrap().len();
+    let offered = Vid::random();
+    post(&a, &b, &relay, offer_message("KEY", offered, b"fake-conflict-offer", 1)).await;
+    b.run(&["inbox"], Run::agent()).await.expect(8);
+    let s = state(&b);
+    assert_eq!(s["candidates"].as_object().unwrap().len(), before + 1);
+    assert!(s["candidates"].as_object().unwrap().values().any(|c| c["version"]["vid"] == serde_json::to_value(offered).unwrap() && c["category"] == "conflict"));
+    b.run(&["sync", "review"], Run::human(vec![])).await.expect(8);
+    assert_eq!(state(&b)["candidates"], s["candidates"]);
+    assert_eq!(b.value("KEY").unwrap(), b"fake-conflict-b");
+}
+
+#[tokio::test]
+async fn sync_envelope_replay_is_skipped_by_seen_set() {
+    let (a, b, relay) = devices().await;
+    post(&a, &b, &relay, SyncMsg::Hello { features: vec!["sync-phase1".into()], is_reply: false }).await;
+    let (id, owner) = b.inbox_credentials();
+    let listed = relay.list_messages(&id, &owner, std::time::Duration::ZERO).await.unwrap();
+    let body = kc_proto::relay::message_body(&listed.messages[0]).unwrap();
+    b.run(&["inbox"], Run::agent()).await.expect(0);
+    let (aid, aowner) = a.inbox_credentials();
+    let replies = relay.list_messages(&aid, &aowner, std::time::Duration::ZERO).await.unwrap().messages.len();
+    relay.post_message(&id, &a.writer_bearer("bravo"), &body).await.unwrap();
+    b.run(&["inbox"], Run::agent()).await.expect(7);
+    assert_eq!(relay.list_messages(&aid, &aowner, std::time::Duration::ZERO).await.unwrap().messages.len(), replies);
+}
+
+#[tokio::test]
+async fn convergence_binding_failure_quarantines_only_that_flow_and_rejects_ack() {
+    let (a, b, relay) = devices().await;
+    enroll(&a, &b).await;
+    let vid = Vid::random();
+    // A valid stored record outside the bounded known list, with an incompatible fp.
+    b.store().set_internal(&fp_slot("KEY", vid), &serde_json::to_vec(&kc_sync::VidRecord {
+        fp: kc_sync::Fp([7; 32]), parents: vec![],
+    }).unwrap()).unwrap();
+    let old_head = head(&b);
+    post(&a, &b, &relay, change_message("KEY", vid, old_head, b"fake-initial-secret")).await;
+    post(&a, &b, &relay, offer_message("OTHER", Vid::random(), b"fake-next-message", 0)).await;
+    b.run(&["inbox"], Run::agent()).await.expect(8);
+    assert_eq!(head(&b), old_head);
+    assert!(state(&b)["peers"].as_object().unwrap().values().any(|p| p["quarantine"].as_array().unwrap().contains(&Value::String("KEY".into()))));
+    assert!(state(&b)["candidates"].as_object().unwrap().values().any(|c| c["version"]["name"] == "OTHER"));
+    assert!(state(&b)["receipts"].as_object().unwrap().values().any(|r| r[0] == "Rejected"));
+    let (id, owner) = a.inbox_credentials();
+    let key = a.store().get_internal("device-key").unwrap().unwrap();
+    let key = kc_proto::DeviceKeyPair::from_secret_bytes(key.as_bytes()).unwrap();
+    let sender = a.peers().find("bravo").unwrap().device_pk;
+    let mut rejected = false;
+    for envelope in relay.list_messages(&id, &owner, std::time::Duration::ZERO).await.unwrap().messages {
+        let bytes = kc_proto::relay::message_body(&envelope).unwrap();
+        let opened = kc_proto::inbox::open_any(&bytes, &[&key], |_| Some(sender), |_| false, kc_proto::inbox::unix_now()).unwrap();
+        if let kc_proto::inbox::Body::Sync(SyncMsg::Ack { results }) = opened.body {
+            rejected |= results.iter().any(|(id, result)| id.new_vid == vid && *result == kc_proto::sync::AckResult::Rejected);
+        }
+    }
+    assert!(rejected);
+}
+
+#[tokio::test]
+async fn offer_then_change_binds_parents_and_promotes_proposal_to_held() {
+    let (a, b, relay) = devices().await;
+    enroll(&a, &b).await;
+    let vid = Vid::random();
+    post(&a, &b, &relay, offer_message("KEY", vid, b"fake-promoted", 1)).await;
+    b.run(&["inbox"], Run::agent()).await.expect(8);
+    let parent = head(&b);
+    post(&a, &b, &relay, change_message("KEY", vid, parent, b"fake-promoted")).await;
+    b.run(&["inbox"], Run::agent()).await.expect(8);
+    let s = state(&b);
+    assert_eq!(s["candidates"].as_object().unwrap().len(), 1);
+    let c = s["candidates"].as_object().unwrap().values().next().unwrap();
+    assert_eq!(c["category"], "held");
+    assert_eq!(c["version"]["parents"], serde_json::to_value(vec![parent]).unwrap());
+    assert_eq!(c["invalid_binding"], false);
+    assert!(s["unbound"].as_array().unwrap().is_empty());
+    b.run(&["sync", "review"], human(vec![Answer::Select(0)])).await.expect(0);
+    assert_eq!(b.value("KEY").unwrap(), b"fake-promoted");
+}
+
+#[tokio::test]
+async fn stale_ack_revokes_grant_without_inventing_generation_or_revoking_newer_accept() {
+    let (a, b, relay) = devices().await;
+    enroll(&a, &b).await;
+    a.set("KEY", b"fake-stale-ack").await;
+    let vid = head(&a);
+    let stale = SyncMsg::Ack { results: vec![(kc_proto::sync::ChangeId {
+        name: ItemName::new("KEY").unwrap(), generation: 1, new_vid: vid,
+    }, kc_proto::sync::AckResult::StaleGeneration)] };
+    // post helper sends A -> B, so construct the reverse envelope here.
+    let key = b.store().get_internal("device-key").unwrap().unwrap();
+    let key = kc_proto::DeviceKeyPair::from_secret_bytes(key.as_bytes()).unwrap();
+    let peer = b.peers().find("alpha").unwrap().clone();
+    let sealed = kc_proto::inbox::seal_v2(&key, &peer.device_pk, &kc_proto::inbox::Body::Sync(stale.clone()), std::time::Duration::from_secs(86400), kc_proto::inbox::unix_now()).unwrap();
+    relay.post_message(&a.inbox_credentials().0, &b.writer_bearer("alpha"), &sealed.body).await.unwrap();
+    a.run(&["inbox"], Run::agent()).await.expect(8);
+    let peer_id = a.peers().find("bravo").unwrap().fingerprint.to_hex();
+    assert_eq!(state(&a)["generations"]["remote"][&peer_id]["KEY"]["accepted"], false);
+    assert_eq!(state(&a)["generations"]["remote"][&peer_id]["KEY"]["generation"], 1);
+    a.set("KEY", b"fake-no-stale-send").await;
+    let s = state(&a);
+    let outbox: kc_sync::Outbox = serde_json::from_value(s["outbox"].clone()).unwrap();
+    assert!(outbox.pending(&kc_sync::PeerId(peer_id.clone())).next().is_none());
+
+    // Recreate a pending old delivery with a newer accepted epoch to prove reordering safety.
+    let mut s = state(&a);
+    let mut outbox: kc_sync::Outbox = serde_json::from_value(s["outbox"].clone()).unwrap();
+    outbox.enqueue(kc_sync::PeerId(peer_id.clone()), kc_sync::ChangeId { name: "KEY".into(), generation: 1, new_vid: kc_sync::Vid(vid.0) });
+    s["outbox"] = serde_json::to_value(outbox).unwrap();
+    s["generations"]["remote"][&peer_id]["KEY"]["accepted"] = true.into();
+    s["generations"]["remote"][&peer_id]["KEY"]["generation"] = 2.into();
+    save_state(&a, &s);
+    let sealed = kc_proto::inbox::seal_v2(&key, &peer.device_pk, &kc_proto::inbox::Body::Sync(stale), std::time::Duration::from_secs(86400), kc_proto::inbox::unix_now()).unwrap();
+    relay.post_message(&a.inbox_credentials().0, &b.writer_bearer("alpha"), &sealed.body).await.unwrap();
+    a.run(&["inbox"], Run::agent()).await.expect(8);
+    assert_eq!(state(&a)["generations"]["remote"][&peer_id]["KEY"]["accepted"], true);
+}
+
+#[tokio::test]
+async fn candidate_eviction_collects_base_and_startup_collects_only_orphan_snapshots() {
+    let (a, b, relay) = devices().await;
+    for n in 0..16 {
+        post(&a, &b, &relay, offer_message(&format!("P{n}"), Vid::random(), b"fake-eviction", 0)).await;
+    }
+    b.run(&["inbox"], Run::agent()).await.expect(8);
+    let before = state(&b);
+    let base_slots = before["candidates"].as_object().unwrap().iter().map(|(slot, c)| (slot.clone(), c["base_record"].as_str().unwrap().to_owned())).collect::<Vec<_>>();
+    b.set("LOCAL", b"fake-local").await;
+    b.run(&["sync", "add", "LOCAL", "--peers", "alpha"], human(vec![])).await.expect(8);
+    let after = state(&b);
+    let evicted = base_slots.iter().filter(|(slot, _)| after["candidates"].get(slot).is_none()).collect::<Vec<_>>();
+    assert_eq!(evicted.len(), 1);
+    for (slot, base) in evicted {
+        assert!(b.store().get_internal(slot).unwrap().is_none());
+        assert!(b.store().get_internal(base).unwrap().is_none());
+    }
+    let retained = after["slots"].as_object().unwrap().keys().find(|s| s.starts_with("sync/snapshot/")).unwrap().clone();
+    let orphan = format!("sync/snapshot/{}", hex(&Vid::random().0));
+    b.store().set_internal(&orphan, b"fake-orphan").unwrap();
+    let mut injected = after;
+    injected["slots"][&orphan] = "ConflictCandidate".into();
+    let queued_vid = Vid::random();
+    let queued_slot = format!("sync/snapshot/{}", hex(&queued_vid.0));
+    b.store().set_internal(&queued_slot, b"fake-queued").unwrap();
+    injected["slots"][&queued_slot] = "ConflictCandidate".into();
+    let mut outbox: kc_sync::Outbox = serde_json::from_value(injected["outbox"].clone()).unwrap();
+    outbox.enqueue(kc_sync::PeerId(b.peers().find("alpha").unwrap().fingerprint.to_hex()),
+        kc_sync::ChangeId { name: "QUEUED".into(), generation: 1, new_vid: kc_sync::Vid(queued_vid.0) });
+    injected["outbox"] = serde_json::to_value(outbox).unwrap();
+    save_state(&b, &injected);
+    b.run(&["sync", "status", "--json"], Run::agent()).await.expect(8);
+    assert!(b.store().get_internal(&orphan).unwrap().is_none());
+    assert!(state(&b)["slots"].get(&orphan).is_none());
+    assert!(b.store().get_internal(&retained).unwrap().is_some());
+    assert!(state(&b)["slots"].get(&retained).is_some());
+    assert!(b.store().get_internal(&queued_slot).unwrap().is_some());
+    assert!(state(&b)["slots"].get(&queued_slot).is_some());
+}
+
+#[tokio::test]
+async fn rejecting_proposal_deletes_binding_and_unbound_and_rm_releases_checkpoint() {
+    let (a, b, relay) = devices().await;
+    let vid = Vid::random();
+    post(&a, &b, &relay, offer_message("PROPOSAL", vid, b"fake-proposal-gc", 0)).await;
+    b.run(&["inbox"], Run::agent()).await.expect(8);
+    assert!(b.store().get_internal(&fp_slot("PROPOSAL", vid)).unwrap().is_some());
+    assert_eq!(state(&b)["unbound"].as_array().unwrap().len(), 1);
+    let before = std::fs::read(b.dir.path().join("sync.json")).unwrap();
+    let out = b.run(&["sync", "review"], Run::human(vec![Answer::Select(1)])).await;
+    out.expect(5);
+    assert_eq!(confirmations(&out).len(), 1);
+    assert_eq!(std::fs::read(b.dir.path().join("sync.json")).unwrap(), before);
+    let out = b.run(&["sync", "review"], human(vec![Answer::Select(1)])).await;
+    out.expect(0);
+    assert_eq!(confirmations(&out).len(), 1);
+    assert!(b.store().get_internal(&fp_slot("PROPOSAL", vid)).unwrap().is_none());
+    assert!(state(&b)["unbound"].as_array().unwrap().is_empty());
+    enroll(&a, &b).await;
+    b.run(&["sync", "status", "--confirm-checkpoint", "KEY"], human(vec![])).await.expect(0);
+    let checkpoint = state(&b)["slots"].as_object().unwrap().keys().find(|s| s.starts_with("sync/kg/")).unwrap().clone();
+    assert!(b.store().get_internal(&checkpoint).unwrap().is_some());
+    b.run(&["sync", "rm", "KEY"], human(vec![])).await.expect(0);
+    assert!(b.store().get_internal(&checkpoint).unwrap().is_none());
+    assert!(state(&b)["slots"].get(&checkpoint).is_none());
+    assert_eq!(b.value("KEY").unwrap(), b"fake-initial-secret");
+}
+
+#[tokio::test]
+async fn full_capacity_scan_and_preserve_mine_leave_inbox_review_and_resolve_operational() {
+    let (a, b, relay) = devices().await;
+    enroll(&a, &b).await;
+    // Pinned slots cannot be evicted. This isolates scan/preserve capacity failure
+    // from the lower-priority eviction path exercised above.
+    let mut s = state(&b);
+    for n in 0..16 {
+        let slot = format!("sync/kg/test-{n}");
+        b.store().set_internal(&slot, b"fake-pinned").unwrap();
+        s["slots"][slot] = "Checkpoint".into();
+    }
+    save_state(&b, &s);
+    b.store().set("KEY", b"fake-out-of-band", kc_store::ItemKind::Text, kc_store::Origin::Local).unwrap();
+    post(&a, &b, &relay, SyncMsg::Hello { features: vec![], is_reply: true }).await;
+    let out = b.run(&["inbox"], Run::agent()).await;
+    out.expect(8);
+    assert!(!out.stderr.contains("Sync storage is full"));
+    let out = b.run(&["sync", "review"], Run::human(vec![])).await;
+    out.expect(8);
+    assert!(!out.stderr.contains("Sync storage is full"));
+    let status = b.run(&["sync", "status", "--json"], Run::agent()).await;
+    let status: Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["capacity_blocked"], true);
+    assert!(std::fs::read_to_string(b.dir.path().join("sync.log")).unwrap().contains("Sync storage is full"));
+    assert_eq!(b.value("KEY").unwrap(), b"fake-out-of-band");
+    let out = b.run(&["sync", "resolve", "KEY", "--keep", "mine"], human(vec![])).await;
+    out.expect(8);
+    assert!(!out.stderr.contains("Sync storage is full"));
+    assert_eq!(b.value("KEY").unwrap(), b"fake-out-of-band");
+    // After capacity is freed, the same review/resolve path can recover normally.
+    let mut s = state(&b);
+    s["slots"].as_object_mut().unwrap().retain(|slot, _| !slot.starts_with("sync/kg/test-"));
+    save_state(&b, &s);
+    b.run(&["sync", "resolve", "KEY", "--keep", "mine"], human(vec![])).await.expect(8);
+    assert_eq!(state(&b)["items"]["KEY"]["conflict"], false);
 }

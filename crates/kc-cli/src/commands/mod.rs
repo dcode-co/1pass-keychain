@@ -75,10 +75,7 @@ async fn execute<H: Host>(host: &mut H, cli: Cli) -> Result<i32> {
     }
     let settings = Settings::load(state.root())?;
     let policy = Policy::new(interactivity, settings.agent_code_send);
-    let mut gates = policy::gates(&cli.command, interactivity.stdin_terminal);
-    if !crate::sync::State::load(&state)?.items.is_empty() {
-        gates.retain(|gate| *gate != policy::Gate::Overwrite);
-    }
+    let gates = policy::gates(&cli.command, interactivity.stdin_terminal);
     policy.check(&gates)?;
     let store = Keychain::new(host.open_store(policy.interactive())?);
     let mut ctx = Ctx {
@@ -122,7 +119,9 @@ async fn dispatch<H: Host>(ctx: &mut Ctx<'_, H>, command: Command) -> Result<i32
         Command::Inbox(args) => {
             let code = inbox::inbox(ctx, args).await?;
             crate::sync::flush(ctx, false).await?;
-            Ok(code.max(crate::sync::pending_code(ctx)?))
+            Ok(if code != 0 && code != 8 { code } else {
+                code.max(crate::sync::pending_code(ctx)?)
+            })
         }
         Command::Sync(args) => sync::run(ctx, args).await,
         Command::Device(args) => device::device(ctx, args).await,

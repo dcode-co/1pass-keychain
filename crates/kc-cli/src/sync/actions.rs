@@ -106,6 +106,9 @@ pub(crate) fn remove<H: Host>(ctx: &Ctx<'_, H>, s: &mut State, name: &str) -> Re
             },
         );
     }
+    let checkpoint = checkpoint_slot(name);
+    s.slots.remove(&checkpoint);
+    s.gc.insert(checkpoint);
     s.offers.retain(|o| o.name != name);
     transaction::clear_candidates(s, name);
     for peer in s.peers.keys().cloned().collect::<Vec<_>>() {
@@ -157,7 +160,7 @@ pub(crate) fn status<H: Host>(ctx: &mut Ctx<'_, H>, json: bool) -> Result<i32> {
         } else {
             tr!("in sync")
         };
-        let fingerprint = current(ctx, name)?.map(|v| hex(&v.2.0[..6]));
+        let fingerprint = ctx.store.get(name)?.map(|v| crate::values::value_fingerprint(v.as_bytes()));
         let peers = item
             .scope
             .iter()
@@ -172,12 +175,7 @@ pub(crate) fn status<H: Host>(ctx: &mut Ctx<'_, H>, json: bool) -> Result<i32> {
         } else {
             {
                 let value = blob(ctx, &c.version.slot)?;
-                Some(fingerprint(
-                    ctx,
-                    &c.version.name,
-                    value.kind,
-                    value.value.expose(),
-                )?)
+                Some(crate::values::value_fingerprint(value.value.expose()))
             }
         };
         let state = match c.category {
@@ -185,7 +183,7 @@ pub(crate) fn status<H: Host>(ctx: &mut Ctx<'_, H>, json: bool) -> Result<i32> {
             CandidateKind::Held => tr!("held"),
             CandidateKind::Conflict => tr!("conflict"),
         };
-        candidates.push(serde_json::json!({"name": c.version.name, "state": state, "peer": label(ctx, &c.peer)?, "vid": c.version.vid, "fingerprint": fp.map(|f| hex(&f.0[..6]))}));
+        candidates.push(serde_json::json!({"name": c.version.name, "state": state, "peer": label(ctx, &c.peer)?, "vid": c.version.vid, "fingerprint": fp}));
     }
     let mut peers = Vec::new();
     for (id, peer) in &s.peers {
@@ -252,8 +250,7 @@ pub(crate) fn review<H: Host>(ctx: &mut Ctx<'_, H>) -> Result<i32> {
     let candidates = {
         let _items = ctx.state.lock_items(ctx.store.namespace())?;
         let _state = ctx.state.lock()?;
-        let mut s = State::load(&ctx.state)?;
-        scan(ctx, &mut s)?;
+        let s = State::load(&ctx.state)?;
         if s.frozen {
             return Ok(8);
         }
@@ -270,10 +267,10 @@ pub(crate) fn review<H: Host>(ctx: &mut Ctx<'_, H>) -> Result<i32> {
             "-".into()
         } else {
             let value = blob(ctx, &c.version.slot)?;
-            hex(&super::fingerprint(ctx, &c.version.name, value.kind, value.value.expose())?.0[..6])
+            crate::values::value_fingerprint(value.value.expose())
         };
-        let existing = current(ctx, &c.version.name)?
-            .map(|v| hex(&v.2.0[..6]))
+        let existing = ctx.store.get(&c.version.name)?
+            .map(|v| crate::values::value_fingerprint(v.as_bytes()))
             .unwrap_or_else(|| "-".into());
         let question = tr!(
             "Review {name} from {peer}: current {current}, proposed {proposed}.",
@@ -292,13 +289,14 @@ pub(crate) fn review<H: Host>(ctx: &mut Ctx<'_, H>) -> Result<i32> {
             _ => {}
         }
     }
-    if !accepts.is_empty() {
+    if !accepts.is_empty() || !rejects.is_empty() {
         human(
             ctx,
             &tr!(
-                "Review sync: accept {accept}, reject {reject}.",
-                accept = accepts.len(),
-                reject = rejects.len()
+                "Accept {names} from {devices}; reject {rejected}",
+                names = names_summary(&accepts.iter().map(|c| c.version.name.clone()).collect::<Vec<_>>()),
+                devices = names_summary(&accepts.iter().map(|c| label(ctx, &c.peer)).collect::<Result<Vec<_>>>()?),
+                rejected = names_summary(&rejects.iter().map(|c| c.version.name.clone()).collect::<Vec<_>>())
             ),
         )?;
     }
@@ -313,6 +311,20 @@ pub(crate) fn review<H: Host>(ctx: &mut Ctx<'_, H>) -> Result<i32> {
             let delivery = delivery_key(&c.peer, &c.version.name, c.generation, c.version.vid);
             if c.category == CandidateKind::Proposal {
                 s.rejected_offers.insert(delivery);
+                let record = record_slot(&c.version.name, c.version.vid);
+                let referenced = s.items.get(&c.version.name)
+                    .is_some_and(|i| i.head == c.version.vid)
+                    || s.versions.values().any(|v| v.name == c.version.name && v.vid == c.version.vid)
+                    || s.candidates.values().any(|other| {
+                        other.version.name == c.version.name && other.version.vid == c.version.vid
+                    });
+                if !referenced {
+                    s.unbound.remove(&format!("{}:{}", c.version.name, vid_key(c.version.vid)));
+                    if let Some(item) = s.items.get_mut(&c.version.name) {
+                        item.known.retain(|vid| *vid != c.version.vid);
+                    }
+                    s.gc.insert(record);
+                }
             } else {
                 s.receipts.insert(
                     delivery,
@@ -351,7 +363,7 @@ pub(crate) fn review<H: Host>(ctx: &mut Ctx<'_, H>) -> Result<i32> {
     s.cleanup(ctx)?;
     Ok(if pending(&s) { 8 } else { 0 })
 }
-pub(crate) fn command<H: Host>(ctx: &mut Ctx<'_, H>, command: SyncCommand) -> Result<i32> {
+pub(crate) fn command<H: Host>(ctx: &mut Ctx<'_, H>, mut command: SyncCommand) -> Result<i32> {
     if let SyncCommand::Status {
         json,
         confirm_checkpoint: None,
@@ -362,36 +374,33 @@ pub(crate) fn command<H: Host>(ctx: &mut Ctx<'_, H>, command: SyncCommand) -> Re
     if matches!(command, SyncCommand::Review) {
         return review(ctx);
     }
-    let no_auth = matches!(
-        command,
-        SyncCommand::Freeze
-            | SyncCommand::Offer { .. }
-            | SyncCommand::Peer {
-                command: SyncPeerCommand::List
-            }
-    );
-    if !no_auth {
-        human(ctx, &tr!("Confirm the requested sync operation."))?;
+    if let SyncCommand::Add { names, .. } = &mut command
+        && names.is_empty()
+    {
+        let options = ctx.store.list()?.into_iter().map(|i| i.name).collect::<Vec<_>>();
+        *names = ctx.multi_select(&tr!("Select sync items."), &options)?
+            .into_iter().map(|i| options[i].clone()).collect();
+    }
+    let reason = match &command {
+        SyncCommand::Add { names, .. } => Some(tr!("kc sync add {names}", names = names_summary(names))),
+        SyncCommand::Rm { names } => Some(tr!("kc sync rm {names}", names = names_summary(names))),
+        SyncCommand::Peer { command: SyncPeerCommand::Add { label } } => Some(tr!("kc sync peer add {label}", label = label)),
+        SyncCommand::Peer { command: SyncPeerCommand::Rm { label } } => Some(tr!("kc sync peer rm {label}", label = label)),
+        SyncCommand::Resolve { name, keep } => Some(tr!("Resolve {name}: keep {choice}", name = name, choice = keep)),
+        SyncCommand::RestoreCheckpoint { name } => Some(tr!("Restore {name} to its checkpoint", name = name)),
+        SyncCommand::Unfreeze => Some(tr!("Unfreeze sync")),
+        SyncCommand::Status { confirm_checkpoint: Some(name), .. } => Some(tr!("Confirm the current value of {name} as its checkpoint", name = name)),
+        _ => None,
+    };
+    if let Some(reason) = reason {
+        human(ctx, &reason)?;
     }
     let _items = ctx.state.lock_items(ctx.store.namespace())?;
     let _state = ctx.state.lock()?;
     let mut s = State::load(&ctx.state)?;
     recover(ctx, &mut s)?;
     match command {
-        SyncCommand::Add { mut names, peers } => {
-            if names.is_empty() {
-                let options = ctx
-                    .store
-                    .list()?
-                    .into_iter()
-                    .map(|i| i.name)
-                    .collect::<Vec<_>>();
-                names = ctx
-                    .multi_select(&tr!("Select sync items."), &options)?
-                    .into_iter()
-                    .map(|i| options[i].clone())
-                    .collect();
-            }
+        SyncCommand::Add { names, peers } => {
             let peers = selected_peers(ctx, &s, &peers)?;
             for name in &names {
                 crate::values::item_name(name)?;

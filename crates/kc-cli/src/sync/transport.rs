@@ -85,9 +85,9 @@ pub(crate) async fn flush<H: Host>(ctx: &mut Ctx<'_, H>, digest: bool) -> Result
         if !p.capable {
             if !p.hello_sent {
                 s.peers.get_mut(&id).unwrap().hello_sent = true;
-                // Persist before attempting: an unknown peer gets at most one initial Hello.
+                // Persist the attempt, but permit retry if delivery fails.
                 s.save(&ctx.state)?;
-                deliver(
+                if let Err(error) = deliver(
                     ctx,
                     &mut s,
                     peer,
@@ -96,7 +96,11 @@ pub(crate) async fn flush<H: Host>(ctx: &mut Ctx<'_, H>, digest: bool) -> Result
                         is_reply: false,
                     },
                 )
-                .await?;
+                .await {
+                    s.peers.get_mut(&id).unwrap().hello_sent = false;
+                    s.save(&ctx.state)?;
+                    return Err(error);
+                }
             }
             continue;
         }

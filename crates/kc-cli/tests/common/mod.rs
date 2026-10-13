@@ -25,6 +25,8 @@ use tempfile::TempDir;
 use tokio::sync::oneshot;
 use zeroize::Zeroizing;
 
+pub mod fault_relay;
+
 pub const NAMESPACE: &str = "dev.1pass.kc.test-cli";
 
 /// A scripted answer to the next prompt.

@@ -211,6 +211,11 @@ fn reserve<H: Host>(
         }
         Reservation::Reserved { evicted } => {
             if let Some(victim) = evicted {
+                let evicted = s.candidates.values()
+                    .filter(|c| c.version.slot == victim).cloned().collect::<Vec<_>>();
+                for c in evicted {
+                    s.gc.insert(c.base_record);
+                }
                 s.candidates.retain(|_, c| c.version.slot != victim);
                 s.slots.remove(&victim);
                 s.gc.insert(victim);
@@ -264,7 +269,7 @@ fn pending(s: &State) -> bool {
                 || s.outbox.pending(&PeerId(p.clone())).next().is_some()
         })
 }
-fn log<H: Host>(ctx: &mut Ctx<'_, H>, text: String) -> Result<()> {
+fn log<H: Host>(ctx: &Ctx<'_, H>, text: String) -> Result<()> {
     use std::io::Write;
     let path = ctx.state.root().join("sync.log");
     if std::fs::metadata(&path).is_ok_and(|m| m.len() >= 1024 * 1024) {
@@ -278,4 +283,13 @@ fn log<H: Host>(ctx: &mut Ctx<'_, H>, text: String) -> Result<()> {
         .open(&path)
         .map_err(|_| state_error())?;
     writeln!(file, "{text}").map_err(|_| state_error())
+}
+
+/// Keep local confirmation dialogs readable without hiding that more items are selected.
+fn names_summary(names: &[String]) -> String {
+    if names.len() <= 3 {
+        names.join(", ")
+    } else {
+        tr!("{names} and {n} more", names = names[..3].join(", "), n = names.len() - 3)
+    }
 }
