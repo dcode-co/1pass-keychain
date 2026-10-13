@@ -26,6 +26,7 @@ pub mod http;
 pub mod i18n;
 pub mod interrupt;
 mod keychain;
+mod local_auth;
 pub mod policy;
 pub mod settings;
 pub mod state;
@@ -35,6 +36,7 @@ pub use console::{Console, PromptError, TermConsole};
 pub use error::CliError;
 pub use host::{Host, RealHost, spawn_and_wait};
 pub use http::HttpRelay;
+pub use local_auth::LocalAuthOutcome;
 pub use settings::{RelayUrl, Settings};
 
 use std::ffi::OsString;
