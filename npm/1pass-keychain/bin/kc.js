@@ -10,7 +10,7 @@ const PACKAGES = {
   "darwin-x64": "1pass-keychain-darwin-x64",
   "linux-arm64": "1pass-keychain-linux-arm64",
   "linux-x64": "1pass-keychain-linux-x64",
-  "win32-x64": "1pass-keychain-win32-x64",
+  "win32-x64": "@1pass/keychain-win32-x64",
 };
 const INSTALL = "https://github.com/dcode-co/1pass-keychain#install";
 

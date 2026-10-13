@@ -45,10 +45,11 @@ publish() {
   fi
 }
 
-# target  platform  os  cpu
-while read -r target platform os cpu; do
-  pkg="1pass-keychain-$platform"
-  dir="$work/$pkg"
+# target  os  cpu  package
+# npm's spam check rejects the name 1pass-keychain-win32-x64, so the Windows package
+# lives in the @1pass scope (owned by the same account).
+while read -r target os cpu pkg; do
+  dir="$work/${pkg//\//-}"
   mkdir -p "$dir/bin"
   if [ "$os" = win32 ]; then
     unzip -q -j "$work/dist/kc-$tag-$target.zip" "kc-$tag-$target/kc.exe" -d "$dir/bin"
@@ -74,11 +75,11 @@ while read -r target platform os cpu; do
   ' > "$dir/package.json"
   publish "$dir"
 done <<'EOF'
-aarch64-apple-darwin darwin-arm64 darwin arm64
-x86_64-apple-darwin darwin-x64 darwin x64
-aarch64-unknown-linux-musl linux-arm64 linux arm64
-x86_64-unknown-linux-musl linux-x64 linux x64
-x86_64-pc-windows-msvc win32-x64 win32 x64
+aarch64-apple-darwin darwin arm64 1pass-keychain-darwin-arm64
+x86_64-apple-darwin darwin x64 1pass-keychain-darwin-x64
+aarch64-unknown-linux-musl linux arm64 1pass-keychain-linux-arm64
+x86_64-unknown-linux-musl linux x64 1pass-keychain-linux-x64
+x86_64-pc-windows-msvc win32 x64 @1pass/keychain-win32-x64
 EOF
 
 main="$work/1pass-keychain"
