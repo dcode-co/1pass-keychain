@@ -31,7 +31,13 @@ Sent 2 items. omarchy accepted 2.
 
 ## Install
 
-Download the archive for your system from
+With [Homebrew](https://brew.sh) on macOS or Linux:
+
+```console
+$ brew install dcode-co/tap/kc
+```
+
+Or download the archive for your system from
 [Releases](https://github.com/dcode-co/1pass-keychain/releases) and put `kc`
 on your `PATH`:
 
