@@ -1,0 +1,19 @@
+{
+  "name": "1pass-keychain",
+  "version": "0.0.0",
+  "description": "kc: move secrets between your own devices' OS keychains (macOS, Linux, Windows), end-to-end encrypted, no account",
+  "keywords": ["keychain", "secrets", "credentials", "cli", "e2ee", "agents"],
+  "homepage": "https://github.com/dcode-co/1pass-keychain#readme",
+  "repository": { "type": "git", "url": "git+https://github.com/dcode-co/1pass-keychain.git" },
+  "license": "MIT",
+  "bin": { "kc": "bin/kc.js" },
+  "files": ["bin/kc.js"],
+  "engines": { "node": ">=18" },
+  "optionalDependencies": {
+    "1pass-keychain-darwin-arm64": "0.0.0",
+    "1pass-keychain-darwin-x64": "0.0.0",
+    "1pass-keychain-linux-arm64": "0.0.0",
+    "1pass-keychain-linux-x64": "0.0.0",
+    "1pass-keychain-win32-x64": "0.0.0"
+  }
+}
