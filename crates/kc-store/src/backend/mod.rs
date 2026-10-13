@@ -367,13 +367,27 @@ mod tests {
     #[test]
     fn a_timed_out_call_that_panics_is_still_settled() {
         let _serial = TIMING_TESTS.lock().unwrap_or_else(PoisonError::into_inner);
-        let err = bounded::<(), _>(Duration::from_millis(20), "test", "", || {
-            thread::sleep(Duration::from_millis(100));
-            panic!("boom")
-        })
-        .unwrap_err();
-        assert!(matches!(err, StoreError::Timeout { .. }));
-        wait_for_abandoned_calls();
+        // The worker panics only once the caller has timed out, however late a busy machine
+        // wakes the caller (a fixed sleep let the panic win the race on CI). A call abandoned
+        // before it started never panics, so try again until one ran.
+        for _ in 0..20 {
+            let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+            let ran = Arc::new(AtomicBool::new(false));
+            let worker = Arc::clone(&ran);
+            let err = bounded::<(), _>(Duration::from_millis(20), "test", "", move || {
+                worker.store(true, Ordering::SeqCst);
+                release_rx.recv().ok();
+                panic!("boom")
+            })
+            .unwrap_err();
+            assert!(matches!(err, StoreError::Timeout { .. }));
+            let _ = release_tx.send(());
+            wait_for_abandoned_calls();
+            if ran.load(Ordering::SeqCst) {
+                return;
+            }
+        }
+        panic!("every call was abandoned before it started");
     }
 
     #[test]
