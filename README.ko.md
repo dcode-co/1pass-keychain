@@ -59,8 +59,8 @@ $ npx 1pass-keychain doctor            # 또는: bunx 1pass-keychain doctor (설
 | Windows x86_64 | `kc-<version>-x86_64-pc-windows-msvc.zip` |
 
 ```console
-$ tar -xzf kc-v0.1.0-aarch64-apple-darwin.tar.gz
-$ install -m 755 kc-v0.1.0-aarch64-apple-darwin/kc ~/.local/bin/kc
+$ tar -xzf kc-v0.2.0-aarch64-apple-darwin.tar.gz
+$ install -m 755 kc-v0.2.0-aarch64-apple-darwin/kc ~/.local/bin/kc
 $ kc doctor
 ```
 
@@ -162,7 +162,7 @@ $ KC_LANG=ko kc doctor
 
 ## 상태
 
-초기 릴리스(v0.1)입니다. 실제 기기에서 시험한 것:
+초기 릴리스(v0.2)입니다. 실제 기기에서 시험한 것:
 
 - macOS ↔ Linux, macOS ↔ Windows 11 사이 페어링 전송(양방향)
 - macOS 에서 Linux 로 일회용 코드 전송

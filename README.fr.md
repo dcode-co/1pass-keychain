@@ -60,8 +60,8 @@ dans votre `PATH` :
 | Windows x86_64 | `kc-<version>-x86_64-pc-windows-msvc.zip` |
 
 ```console
-$ tar -xzf kc-v0.1.0-aarch64-apple-darwin.tar.gz
-$ install -m 755 kc-v0.1.0-aarch64-apple-darwin/kc ~/.local/bin/kc
+$ tar -xzf kc-v0.2.0-aarch64-apple-darwin.tar.gz
+$ install -m 755 kc-v0.2.0-aarch64-apple-darwin/kc ~/.local/bin/kc
 $ kc doctor
 ```
 
@@ -159,7 +159,7 @@ Les valeurs, noms d'éléments, codes et la sortie JSON ne sont jamais traduits.
 
 ## État
 
-Version préliminaire (v0.1). Testé sur de vraies machines :
+Version préliminaire (v0.2). Testé sur de vraies machines :
 
 - envois appairés dans les deux sens entre macOS et Linux, et entre macOS et Windows 11
 - un envoi avec code à usage unique de macOS vers Linux
