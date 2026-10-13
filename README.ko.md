@@ -145,6 +145,29 @@ desktop$ kc inbox                            # 도착한 항목을 저장(최대
 | `kc pair`, `kc peers`, `kc inbox`, `kc device` | 기억된 기기 |
 | `kc doctor` | 키체인, 중계 서버, 설정 점검 |
 
+## 문제 해결
+
+- **`kc doctor` 에 `device FAIL: the OS keychain refused access` 가 나올 때**
+  (macOS). Homebrew, npm, 소스 빌드처럼 설치 방법을 바꾸면 다른 kc 바이너리가
+  저장한 항목을 읽기 전에 키체인이 허용 여부를 묻습니다. 실패한 명령(또는
+  `kc doctor`)을 터미널에서 한 번 실행하고 **항상 허용**을 누르세요.
+  `kc --help`·`kc --version` 은 키체인을 읽지 않습니다. 스크립트와 에이전트는 이 창에 답할
+  수 없으니 그 전에 해 두어야 합니다.
+- **`kc: … is missing. Reinstall 1pass-keychain with optional dependencies
+  enabled` 가 나올 때** (npm·Bun). 바이너리는 npm 이 선택 의존성으로 설치하는
+  플랫폼별 패키지에 들어 있습니다. `1pass-keychain-darwin-arm64`,
+  `-darwin-x64`, `-linux-arm64`, `-linux-x64`, 그리고 Windows 는
+  `@1pass/keychain-win32-x64` 입니다. `--omit=optional`(또는 `--no-optional`)
+  로 설치하면 빠지니 그 옵션 없이 다시 설치하세요.
+- **Windows 에서 `no Credential Manager logon session` 이 나올 때.** SSH 키로
+  로그인한 세션에는 자격 증명 관리자가 없습니다. 데스크톱 세션에서 실행하거나
+  비밀번호로 SSH 접속하세요.
+- **Linux 에서 키체인을 쓸 수 없을 때.** gnome-keyring 같은 Secret Service 를
+  실행하고 잠금을 푸세요. 무엇이 빠졌는지는 `kc doctor` 가 알려 줍니다.
+- **메시지가 원하지 않는 언어로 나올 때.** `KC_LANG` 을 지정하세요(아래 언어
+  절 참고). stdout 과 stderr 가 모두 터미널이 아니면(스크립트·에이전트)
+  `KC_LANG` 이 없는 한 영어로 나옵니다.
+
 ## 언어
 
 kc 의 메시지와 `kc --help` 는 English, 한국어, 日本語, 简体中文, 繁體中文,
@@ -172,6 +195,8 @@ $ KC_LANG=ko kc doctor
 전송. PAKE 크레이트는 독립 감사를 받지 않았습니다. 프로토콜은
 [docs/PROTOCOL.md](docs/PROTOCOL.md), 위협 모델은
 [docs/SECURITY.md](docs/SECURITY.md) 에 있습니다.
+
+배포 절차와 알려진 함정은 [docs/RELEASING.md](docs/RELEASING.md) 에 있습니다.
 
 ## 라이선스
 

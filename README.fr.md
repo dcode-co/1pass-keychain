@@ -143,6 +143,30 @@ Consultez [docs/SECURITY.md](docs/SECURITY.md) pour savoir quand utiliser `kc de
 | `kc pair`, `kc peers`, `kc inbox`, `kc device` | appareils mémorisés |
 | `kc doctor` | vérifie le trousseau, le relais et la configuration |
 
+## Dépannage
+
+- **`kc doctor` affiche `device FAIL: the OS keychain refused access`** (macOS).
+  Le trousseau demande une autorisation avant qu'un autre binaire kc lise des éléments
+  enregistrés par un autre, par exemple après être passé de Homebrew à npm ou à une
+  compilation depuis les sources. Lancez une fois dans un terminal la commande qui échoue
+  (ou `kc doctor`) et choisissez **Toujours autoriser** ; `kc --help` et
+  `kc --version` n'accèdent pas au trousseau. Les scripts et les agents ne peuvent pas répondre
+  à cette demande ; faites-le donc avant de les lancer.
+- **`kc: … is missing. Reinstall 1pass-keychain with optional dependencies
+  enabled`** (npm ou Bun). Le binaire est fourni dans un paquet par plateforme
+  que npm installe comme dépendance optionnelle : `1pass-keychain-darwin-arm64`,
+  `-darwin-x64`, `-linux-arm64`, `-linux-x64`, et `@1pass/keychain-win32-x64`
+  pour Windows. Une installation avec `--omit=optional` (ou `--no-optional`)
+  l'omet ; réinstallez sans cette option.
+- **Windows : `no Credential Manager logon session`.** Le Gestionnaire d'identification
+  n'existe pas dans une session SSH ouverte avec une clé. Lancez kc depuis une
+  session de bureau, ou connectez-vous en SSH avec un mot de passe.
+- **Linux : le trousseau n'est pas disponible.** Démarrez un Secret Service (par exemple
+  gnome-keyring) et déverrouillez-le ; `kc doctor` indique ce qui manque.
+- **Messages dans la mauvaise langue.** Définissez `KC_LANG` (voir Langues ci-dessous).
+  Quand ni stdout ni stderr ne sont un terminal (scripts, agents), kc écrit en
+  anglais sauf si `KC_LANG` est défini.
+
 ## Langues
 
 Les messages de kc et `kc --help` existent en English, 한국어, 日本語, 简体中文, 繁體中文,
@@ -169,6 +193,9 @@ Pas encore testé sur de vraies machines : les envois avec code à usage unique 
 Le crate PAKE n'a pas fait l'objet d'un audit indépendant. Le protocole est décrit dans
 [docs/PROTOCOL.md](docs/PROTOCOL.md) et le modèle de menace dans
 [docs/SECURITY.md](docs/SECURITY.md).
+
+Mainteneurs : les étapes de publication et les pièges connus sont décrits dans
+[docs/RELEASING.md](docs/RELEASING.md).
 
 ## Licence
 

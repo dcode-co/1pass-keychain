@@ -143,6 +143,29 @@ desktop$ kc inbox                            # 届いたものを保存 (最大 
 | `kc pair`, `kc peers`, `kc inbox`, `kc device` | 記憶済みデバイス |
 | `kc doctor` | キーチェーン、リレー、設定を確認 |
 
+## トラブルシューティング
+
+- **`kc doctor` に `device FAIL: the OS keychain refused access` と表示される**
+  (macOS)。Homebrew、npm、ソースビルドを切り替えた後など、別の kc バイナリが
+  保存した項目を読む前にキーチェーンが確認を求めます。失敗したコマンド (または
+  `kc doctor`) をターミナルで一度実行し、**常に許可** を選んでください。
+  `kc --help` と `kc --version` はキーチェーンにアクセスしません。スクリプトやエージェントはこの
+  確認に応答できないため、実行前に済ませておいてください。
+- **`kc: … is missing. Reinstall 1pass-keychain with optional dependencies
+  enabled` と表示される** (npm または Bun)。バイナリは npm が
+  オプション依存関係としてインストールするプラットフォーム別パッケージに含まれます:
+  `1pass-keychain-darwin-arm64`、`-darwin-x64`、`-linux-arm64`、`-linux-x64`、
+  Windows は `@1pass/keychain-win32-x64`。`--omit=optional` (または `--no-optional`)
+  でインストールすると含まれないので、そのフラグなしで再インストールしてください。
+- **Windows: `no Credential Manager logon session`。** 鍵でログインした SSH
+  セッションには資格情報マネージャーがありません。デスクトップセッションから
+  kc を実行するか、パスワードで SSH 接続してください。
+- **Linux: キーチェーンが使えない。** Secret Service (gnome-keyring など) を起動して
+  ロックを解除してください。何が足りないかは `kc doctor` が示します。
+- **メッセージが意図しない言語で表示される。** `KC_LANG` を設定してください (下の「言語」を参照)。
+  stdout と stderr のどちらもターミナルでない場合 (スクリプト、エージェント)、
+  `KC_LANG` を設定しない限り kc は英語で出力します。
+
 ## 言語
 
 kc のメッセージと `kc --help` は English、한국어、日本語、简体中文、繁體中文、
@@ -169,6 +192,9 @@ $ KC_LANG=ko kc doctor
 PAKE クレートは独立した監査を受けていません。プロトコルは
 [docs/PROTOCOL.md](docs/PROTOCOL.md)、脅威モデルは
 [docs/SECURITY.md](docs/SECURITY.md) にあります。
+
+メンテナー向け: リリース手順と既知の落とし穴は
+[docs/RELEASING.md](docs/RELEASING.md) にあります。
 
 ## ライセンス
 

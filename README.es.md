@@ -143,6 +143,29 @@ Consulta [docs/SECURITY.md](docs/SECURITY.md) para saber cuándo usar `kc device
 | `kc pair`, `kc peers`, `kc inbox`, `kc device` | dispositivos recordados |
 | `kc doctor` | comprueba el llavero, el relé y la configuración |
 
+## Solución de problemas
+
+- **`kc doctor` muestra `device FAIL: the OS keychain refused access`** (macOS).
+  El llavero pregunta antes de que un binario de kc distinto lea elementos que guardó otro,
+  por ejemplo tras cambiar entre Homebrew, npm y una compilación desde el código fuente.
+  Ejecuta una vez en una terminal el comando que falla (o `kc doctor`) y elige
+  **Permitir siempre**; `kc --help` y `kc --version` no acceden al llavero.
+  Los scripts y agentes no pueden responder a ese aviso, así que hazlo antes de que se ejecuten.
+- **`kc: … is missing. Reinstall 1pass-keychain with optional dependencies
+  enabled`** (npm o Bun). El binario viene en un paquete por plataforma que
+  npm instala como dependencia opcional: `1pass-keychain-darwin-arm64`,
+  `-darwin-x64`, `-linux-arm64`, `-linux-x64` y `@1pass/keychain-win32-x64`
+  para Windows. Instalar con `--omit=optional` (o `--no-optional`) lo omite;
+  reinstala sin esa opción.
+- **Windows: `no Credential Manager logon session`.** El Administrador de credenciales
+  no existe en una sesión SSH iniciada con una clave. Ejecuta kc desde una
+  sesión de escritorio o conéctate por SSH con una contraseña.
+- **Linux: el llavero no está disponible.** Inicia un Secret Service (por ejemplo
+  gnome-keyring) y desbloquéalo; `kc doctor` indica qué parte falta.
+- **Mensajes en el idioma equivocado.** Define `KC_LANG` (consulta Idiomas más abajo).
+  Cuando ni stdout ni stderr son una terminal (scripts, agentes), kc escribe en
+  inglés salvo que `KC_LANG` esté definido.
+
 ## Idiomas
 
 Los mensajes de kc y `kc --help` están disponibles en English, 한국어, 日本語, 简体中文, 繁體中文,
@@ -169,6 +192,9 @@ Aún sin probar en máquinas reales: envíos con código de un solo uso desde Li
 El crate de PAKE no ha tenido una auditoría independiente. El protocolo está en
 [docs/PROTOCOL.md](docs/PROTOCOL.md) y el modelo de amenazas en
 [docs/SECURITY.md](docs/SECURITY.md).
+
+Mantenedores: los pasos de publicación y los problemas conocidos están en
+[docs/RELEASING.md](docs/RELEASING.md).
 
 ## Licencia
 

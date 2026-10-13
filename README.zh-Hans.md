@@ -142,6 +142,25 @@ desktop$ kc inbox                            # 保存收到的内容（最多保
 | `kc pair`, `kc peers`, `kc inbox`, `kc device` | 已记住的设备 |
 | `kc doctor` | 检查钥匙串、中继服务器和配置 |
 
+## 故障排除
+
+- **`kc doctor` 显示 `device FAIL: the OS keychain refused access`**（macOS）。
+  当另一个 kc 二进制文件读取别的 kc 二进制文件保存的条目时，钥匙串会先询问，
+  例如在 Homebrew、npm 和源码构建之间切换之后。在终端中运行一次失败的命令
+  （或 `kc doctor`）并选择**始终允许**；`kc --help` 和 `kc --version` 不会访问钥匙串。
+  脚本和代理无法回应该提示，所以请在它们运行之前完成。
+- **`kc: … is missing. Reinstall 1pass-keychain with optional dependencies
+  enabled`**（npm 或 Bun）。二进制文件位于 npm 作为可选依赖安装的
+  各平台包中：`1pass-keychain-darwin-arm64`、`-darwin-x64`、`-linux-arm64`、
+  `-linux-x64`，Windows 为 `@1pass/keychain-win32-x64`。用 `--omit=optional`
+  （或 `--no-optional`）安装会漏掉它；请去掉该选项重新安装。
+- **Windows：`no Credential Manager logon session`。** 用密钥登录的 SSH 会话中
+  没有凭据管理器。请在桌面会话中运行 kc，或用密码通过 SSH 连接。
+- **Linux：钥匙串不可用。** 启动 Secret Service（例如 gnome-keyring）并解锁；
+  `kc doctor` 会指出缺少哪一部分。
+- **消息语言不对。** 设置 `KC_LANG`（见下方"语言"）。当 stdout 和 stderr
+  都不是终端时（脚本、代理），除非设置了 `KC_LANG`，否则 kc 输出英文。
+
 ## 语言
 
 kc 的消息和 `kc --help` 支持 English、한국어、日本語、简体中文、繁體中文、
@@ -168,6 +187,9 @@ $ KC_LANG=ko kc doctor
 PAKE crate 尚未经过独立审计。协议见
 [docs/PROTOCOL.md](docs/PROTOCOL.md)，威胁模型见
 [docs/SECURITY.md](docs/SECURITY.md)。
+
+维护者：发布步骤和已知陷阱见
+[docs/RELEASING.md](docs/RELEASING.md)。
 
 ## 许可证
 
