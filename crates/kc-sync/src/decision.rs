@@ -51,6 +51,8 @@ pub enum HoldReason {
     OverLimit,
     /// Complete Phase-1 resolve requires review (§2.4, §12.5).
     Resolve,
+    /// Retire does not directly name the current head (§2.5).
+    RetireMismatch,
 }
 
 /// Side-effect-free state intent; persistence and slot allocation precede ACK (§12.4).
@@ -153,14 +155,23 @@ fn advance(state: &ItemState, incoming: &Incoming, convergence: bool, resolve: b
     } else {
         incoming.new_vid
     };
-    let lineage = Lineage::merge(&state.lineage, &incoming.lineage);
-    let lineage = Lineage::new(
+    // Equal values do not authenticate the sender's claimed ancestry.
+    let lineage = if convergence {
+        state.lineage.clone()
+    } else {
+        Lineage::merge(&state.lineage, &incoming.lineage)
+    };
+    let mut lineage = Lineage::new(
         lineage
             .iter()
             .copied()
-            .chain([state.head, incoming.new_vid]),
+            .chain([state.head, incoming.new_vid])
+            .chain(incoming.parents.iter().copied().filter(|_| resolve)),
     )
     .with_head(head);
+    if convergence {
+        lineage = lineage.with_heads([state.head, incoming.new_vid]);
+    }
     Decision {
         ack: AckResult::Applied,
         quarantine: false,
@@ -213,6 +224,9 @@ pub fn decide(
     if incoming.retire && approval.is_none() {
         return Decision::held(HoldReason::NoApproval);
     }
+    if incoming.retire && incoming.parents.as_slice() != [state.head] {
+        return Decision::held(HoldReason::RetireMismatch);
+    }
     // Row 5: complete parent coverage is necessary even with a verified approval.
     if let Some(candidates) = &state.conflict {
         let complete = incoming.parents.contains(&state.head)
@@ -221,6 +235,9 @@ pub fn decide(
                 .keys()
                 .all(|vid| incoming.parents.contains(vid));
         if !complete {
+            if incoming.retire {
+                return Decision::held(HoldReason::Resolve);
+            }
             return conflict(state, current_fp, incoming);
         }
         if approval.is_none() {
@@ -240,8 +257,8 @@ pub fn decide(
     if direct && approval.is_some() && within_limits {
         return advance(state, incoming, false, false);
     }
-    // Row 8; an unapproved Retire is always review-only (§2.5).
-    if direct || (incoming.retire && approval.is_none()) {
+    // Row 8.
+    if direct {
         return Decision::held(if approval.is_none() {
             HoldReason::NoApproval
         } else {

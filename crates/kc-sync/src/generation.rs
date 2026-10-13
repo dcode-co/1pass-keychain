@@ -56,6 +56,21 @@ impl Generations {
         self.owned.get(name).is_some_and(|o| o.peers.contains(peer))
     }
 
+    /// Removes one scope member without changing generation; send Leave only to this peer (§12.2).
+    pub fn remove_peer(&mut self, name: &str, peer: &PeerId) -> Option<(Registration, PeerId)> {
+        let owned = self.owned.get_mut(name)?;
+        if !owned.peers.remove(peer) {
+            return None;
+        }
+        Some((
+            Registration {
+                name: name.into(),
+                generation: owned.generation,
+            },
+            peer.clone(),
+        ))
+    }
+
     /// Removes local membership and bumps its generation; send Leave to returned peers (§12.2).
     pub fn rm(
         &mut self,

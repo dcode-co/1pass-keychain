@@ -48,6 +48,10 @@ impl SlotBudget {
     pub fn capacity(&self) -> usize {
         self.capacity
     }
+    /// Updates the item count without evicting existing slots on shrink (§12.3).
+    pub fn set_items(&mut self, items: usize) {
+        self.capacity = items.saturating_mul(4).max(16);
+    }
     /// Returns the count of reserved slots (§12.3).
     pub fn used(&self) -> usize {
         self.slots.len()
@@ -67,6 +71,10 @@ impl SlotBudget {
             };
         }
         let mut evicted = None;
+        // A reduced budget preserves all existing reservations until released.
+        if self.slots.len() > self.capacity {
+            return Reservation::Refused;
+        }
         if self.slots.len() >= self.capacity {
             if kind <= SlotKind::Held {
                 return Reservation::Refused;
@@ -106,6 +114,16 @@ impl SlotBudget {
         self.slots.remove(name).is_some()
     }
 
+    /// Reserves durable review storage, or returns a non-final capacity deferral (§12.3).
+    pub fn prepare_hold(&mut self, held_slot: &str, reason: HoldReason) -> OverwriteCapacity {
+        match self.reserve(held_slot, SlotKind::Held) {
+            Reservation::Reserved { .. } => OverwriteCapacity::Held(Decision::held(reason)),
+            Reservation::Refused => {
+                OverwriteCapacity::Deferred(Decision::unchanged(AckResult::DeferredCapacity))
+            }
+        }
+    }
+
     /// Ensures a checkpoint before overwrite; fallback is held, then capacity deferral (§2.6, §12.3).
     pub fn prepare_overwrite(
         &mut self,
@@ -114,14 +132,7 @@ impl SlotBudget {
     ) -> OverwriteCapacity {
         match self.reserve(checkpoint_slot, SlotKind::Checkpoint) {
             Reservation::Reserved { evicted } => OverwriteCapacity::Ready { evicted },
-            Reservation::Refused => match self.reserve(held_slot, SlotKind::Held) {
-                Reservation::Reserved { .. } => {
-                    OverwriteCapacity::Held(Decision::held(HoldReason::OverLimit))
-                }
-                Reservation::Refused => {
-                    OverwriteCapacity::Deferred(Decision::unchanged(AckResult::DeferredCapacity))
-                }
-            },
+            Reservation::Refused => self.prepare_hold(held_slot, HoldReason::OverLimit),
         }
     }
 }

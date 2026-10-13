@@ -14,6 +14,7 @@ use crate::rng;
 use crate::secret::SecretBytes;
 
 pub const MAX_LINEAGE: usize = 64;
+pub const MAX_PARENTS: usize = 65;
 
 /// A random version identifier: raw 16 bytes in postcard, hex in JSON.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -70,6 +71,7 @@ pub struct Change {
     pub name: ItemName,
     pub generation: u64,
     pub new_vid: Vid,
+    #[serde(deserialize_with = "deserialize_parents")]
     pub parents: Vec<Vid>,
     #[serde(deserialize_with = "deserialize_lineage")]
     pub lineage: Vec<Vid>,
@@ -79,7 +81,7 @@ pub struct Change {
 
 impl Change {
     pub fn validate(&self) -> Result<(), InboxError> {
-        if self.lineage.len() > MAX_LINEAGE {
+        if self.lineage.len() > MAX_LINEAGE || self.parents.len() > MAX_PARENTS {
             return Err(InboxError::Malformed);
         }
         Ok(())
@@ -116,6 +118,7 @@ pub enum SyncMsg {
         /// value is below its current generation: it was sent before a `sync rm` (§2.1).
         known_generation: u64,
         vid: Vid,
+        #[serde(deserialize_with = "deserialize_lineage")]
         lineage: Vec<Vid>,
         kind: ItemKind,
         value: SecretBytes,
@@ -132,9 +135,11 @@ pub enum SyncMsg {
         changes: Vec<Change>,
     },
     Ack {
+        #[serde(deserialize_with = "deserialize_ack_results")]
         results: Vec<(ChangeId, AckResult)>,
     },
     Digest {
+        #[serde(deserialize_with = "deserialize_digest_entries")]
         entries: Vec<DigestEntry>,
     },
     Approvals {
@@ -145,40 +150,90 @@ pub enum SyncMsg {
 impl SyncMsg {
     /// Checks in-memory messages too, before sealing or after opening.
     pub fn validate(&self) -> Result<(), InboxError> {
-        if let Self::Changes { changes } = self {
-            let mut names = HashSet::new();
-            for change in changes {
-                change.validate()?;
-                if !names.insert(&change.name) {
+        match self {
+            Self::Offer { lineage, .. } if lineage.len() > MAX_LINEAGE => {
+                return Err(InboxError::Malformed);
+            }
+            Self::Changes { changes } => {
+                let mut names = HashSet::new();
+                for change in changes {
+                    change.validate()?;
+                    if !names.insert(&change.name) {
+                        return Err(InboxError::Malformed);
+                    }
+                }
+            }
+            Self::Digest { entries } => {
+                let mut names = HashSet::new();
+                if entries.iter().any(|entry| !names.insert(&entry.name)) {
                     return Err(InboxError::Malformed);
                 }
             }
+            Self::Ack { results } => {
+                let mut ids = HashSet::new();
+                if results.iter().any(|(id, _)| !ids.insert(id)) {
+                    return Err(InboxError::Malformed);
+                }
+            }
+            _ => {}
         }
         Ok(())
     }
 }
 
-// Bound allocation as well as accepting at most 64 decoded lineage entries.
+fn deserialize_ack_results<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<(ChangeId, AckResult)>, D::Error> {
+    let results = Vec::<(ChangeId, AckResult)>::deserialize(deserializer)?;
+    let mut ids = HashSet::new();
+    if results.iter().any(|(id, _)| !ids.insert(id)) {
+        return Err(serde::de::Error::custom("duplicate ACK change_id"));
+    }
+    Ok(results)
+}
+
+fn deserialize_digest_entries<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<DigestEntry>, D::Error> {
+    let entries = Vec::<DigestEntry>::deserialize(deserializer)?;
+    let mut names = HashSet::new();
+    if entries.iter().any(|entry| !names.insert(&entry.name)) {
+        return Err(serde::de::Error::custom("duplicate digest name"));
+    }
+    Ok(entries)
+}
+
+// Bound allocation as well as the decoded number of version identifiers.
 fn deserialize_lineage<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Vid>, D::Error> {
-    struct Lineage;
-    impl<'de> serde::de::Visitor<'de> for Lineage {
+    deserialize_vids::<D, MAX_LINEAGE>(deserializer)
+}
+
+fn deserialize_parents<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Vid>, D::Error> {
+    deserialize_vids::<D, MAX_PARENTS>(deserializer)
+}
+
+fn deserialize_vids<'de, D: Deserializer<'de>, const MAX: usize>(
+    deserializer: D,
+) -> Result<Vec<Vid>, D::Error> {
+    struct Vids<const MAX: usize>;
+    impl<'de, const MAX: usize> serde::de::Visitor<'de> for Vids<MAX> {
         type Value = Vec<Vid>;
         fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str("at most 64 version identifiers")
+            write!(f, "at most {MAX} version identifiers")
         }
         fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<Vid>, A::Error> {
-            if seq.size_hint().is_some_and(|n| n > MAX_LINEAGE) {
-                return Err(serde::de::Error::custom("lineage exceeds 64 entries"));
+            if seq.size_hint().is_some_and(|n| n > MAX) {
+                return Err(serde::de::Error::custom("too many version identifiers"));
             }
-            let mut out = Vec::with_capacity(seq.size_hint().unwrap_or(0).min(MAX_LINEAGE));
+            let mut out = Vec::with_capacity(seq.size_hint().unwrap_or(0).min(MAX));
             while let Some(vid) = seq.next_element()? {
-                if out.len() == MAX_LINEAGE {
-                    return Err(serde::de::Error::custom("lineage exceeds 64 entries"));
+                if out.len() == MAX {
+                    return Err(serde::de::Error::custom("too many version identifiers"));
                 }
                 out.push(vid);
             }
             Ok(out)
         }
     }
-    deserializer.deserialize_seq(Lineage)
+    deserializer.deserialize_seq(Vids::<MAX>)
 }

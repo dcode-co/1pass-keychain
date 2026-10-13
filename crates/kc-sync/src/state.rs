@@ -83,6 +83,15 @@ impl Lineage {
         self
     }
 
+    pub(crate) fn with_heads(mut self, heads: [Vid; 2]) -> Self {
+        self.0.extend(heads);
+        while self.0.len() > MAX_LINEAGE {
+            let victim = self.0.iter().copied().find(|v| !heads.contains(v)).unwrap();
+            self.0.remove(&victim);
+        }
+        self
+    }
+
     /// Tests ancestry membership without trusting remote ancestry for authorization (§2.2).
     pub fn contains(&self, vid: &Vid) -> bool {
         self.0.contains(vid)
