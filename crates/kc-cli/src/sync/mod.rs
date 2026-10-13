@@ -218,11 +218,10 @@ fn reserve<H: Host>(
                     .cloned()
                     .collect::<Vec<_>>();
                 s.candidates.retain(|_, c| c.version.slot != victim);
+                // Only the slots go: the vid binding stays, because the evicted candidate
+                // can be the one whose acceptance is reserving this slot.
                 for c in evicted {
                     s.gc.insert(c.base_record);
-                    if c.category == CandidateKind::Proposal {
-                        forget_binding(s, &c.version.name, c.version.vid);
-                    }
                 }
                 s.slots.remove(&victim);
                 s.gc.insert(victim);
