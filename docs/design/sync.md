@@ -190,7 +190,7 @@ logi 점검 결과(`scratchpad/logi-survey.md`)를 근거로, kc 전용 승인 �
 - 인박스 **바깥 봉투 버전을 2로** 올린다. v0.2 kc 는 바깥 봉투 버전을 복호화 전에 검사해(`crates/kc-proto/src/inbox.rs:329`) "지원하지 않는 버전"으로 인박스에 남겨 두고 72시간 뒤 만료된다(codex P2-13 확인).
 ```text
 InboxPlain2 { v:2, msg_id, sender_fp, recipient_fp, created_at, expires_at, body }
-body = Items(...) | Sync { kind: Hello | Offer | Changes | Ack | Digest | Approvals }
+body = Items(...) | Sync { kind: Hello | Offer | Accept | Leave | Changes | Ack | Digest | Approvals }
 Change { name, generation, new_vid, lineage(≤64), op: Put{value,kind} | Retire, approval_ref? }
 ```
 - 상대의 v2 지원 여부를 모르면 **Hello 한 통만** 보낸다. Hello 는 기능 목록만 담고 받는 쪽 상태를 바꾸지 않는 무해한 메시지다. v0.2 기기에서는 72시간 뒤 만료되는 낭비 1통으로 끝난다. Hello 응답을 받기 전에는 다른 sync 메시지를 보내지 않고 보류한다(v0.2 재리뷰 P1: 확인 전 금지 규칙이 Hello 까지 막아 교착되던 문제). **sync 변경을 v1 Items 로 낮춰 보내지 않는다.** 일반 `send --to` 는 지금처럼 v1 이다.
@@ -266,7 +266,7 @@ v0.3 재리뷰가 "지금 정하지 않으면 다시 짜야 한다"고 꼽은 5�
 
 ### 12.1 인박스 v2 형식
 - 바깥 봉투 필드와 순서는 v1 과 같다(`v, suite, sender_fp, recipient_fp, enc, ct`). `v = 2` 만 다르다. 지금 코드는 봉투 전체를 decode 한 뒤 버전을 보므로(`crates/kc-proto/src/inbox.rs:328`) **배치를 바꾸면 v0.2 가 Malformed 로 지운다.** 배치는 바꾸지 않는다.
-- AAD 는 v1 과 같은 방식으로 봉투 필드 전체(버전 포함)를 덮는다. HPKE info 는 `"kc2 inbox" ‖ sender_fp ‖ recipient_fp`.
+- AAD 는 v1 과 똑같이 `postcard(v, suite, sender_fp, recipient_fp)` 다(`crates/kc-proto/src/inbox.rs:182`). `enc`·`ct` 는 넣지 않는다. HPKE info 는 `"kc2 inbox" ‖ sender_fp ‖ recipient_fp`.
 - 안쪽 `InboxPlain2.v` 는 바깥 `v` 와 같아야 한다. 다르면 거부한다.
 - 내용 종류는 `body` 열거형의 판별자로 나눈다. Phase 0 에서 골든 벡터로 고정한다.
 - **변경 식별자** `change_id = (name, generation, new_vid)`. ACK 는 `[(change_id, 결과)]` 를 담는다. 결과 = `applied | held | conflict | stale_generation | deferred_capacity | rejected`.
@@ -279,22 +279,23 @@ v0.3 재리뷰가 "지금 정하지 않으면 다시 짜야 한다"고 꼽은 5�
 - 기기별 범위 변경(`--peers`)도 Offer·Leave 로 표현한다.
 
 ### 12.3 ACK 와 보관·용량
-- 보낸 기기는 대상 기기 **전부**가 그 `change_id` 에 어떤 결과든 ACK 하면 보낸 값 스냅샷을 지운다. 같은 이름의 더 새 변경이 ACK 되면 이전 것도 지운다. ACK 는 `change_id` 가 정확히 같은 큐 항목만 지운다(옛 ACK 가 새 항목을 지우지 않음).
+- 보낸 기기는 대상 기기 **전부**가 그 `change_id` 에 **확정 결과**(`applied | held | conflict | stale_generation | rejected`)를 ACK 하면 보낸 값 스냅샷을 지운다. `deferred_capacity` 는 확정 결과가 아니다. 스냅샷과 큐 항목을 그대로 두고 다음 digest 뒤 다시 보낸다. 같은 이름의 더 새 변경이 ACK 되면 이전 것도 지운다. ACK 는 `change_id` 가 정확히 같은 큐 항목만 지운다(옛 ACK 가 새 항목을 지우지 않음).
 - 받는 기기의 보류·충돌 후보 슬롯은 해결·거절할 때 지운다. 복구 기준점은 사람이 확인할 때만 바뀐다.
 - 슬롯 총량 상한 = `max(16, 대상 항목 수 × 4)`. 대상이 0개여도 첫 제안을 받을 수 있다.
 - 보존 우선순위: 복구 기준점 > 충돌 후보 > 보류 값 > 제안. 상한에 닿으면 새 제안·보류를 받지 않고 `deferred_capacity` ACK 를 보낸다(보낸 쪽은 다음 digest 뒤 다시 보냄). 기준점은 절대 밀어내지 않는다.
 
 ### 12.4 journal 복구 단위
-- 원격 적용 한 건 = 한 트랜잭션: ① journal 에 "이전 지문·예정 지문·change_id" 기록 → ② 기준점·후보 슬롯 확보 → ③ 키체인 쓰기 → ④ `sync.json`(head·lineage·승인 소비·보낼 ACK) 갱신 → ⑤ journal 정리.
+- 원격 적용 한 건 = 한 트랜잭션: ① journal 에 **적용 의도 레코드 전체**를 기록 — `change_id`, 보낸 기기, 이전 지문, 예정 지문, 적용 뒤 head·lineage, 소비할 승인 키, 보낼 ACK 결과, 확보할 기준점·후보 슬롯 이름. 예정 값 자체는 ② 에서 확보하는 후보 슬롯에 먼저 넣어 둔다 → ② 기준점·후보 슬롯 확보 → ③ 키체인 쓰기 → ④ `sync.json`(head·lineage·승인 소비·보낼 ACK) 갱신 → ⑤ journal 정리.
 - 재시작 때 남은 journal 이 있으면 현재 값 지문으로 판정한다.
-  - 예정 지문과 같음 → ④부터 마저 한다.
+  - 예정 지문과 같음 → 레코드대로 ④부터 마저 한다.
   - 이전 지문과 같음 → 쓰기가 일어나지 않았으니 journal 만 지우고 다시 시도한다.
   - **둘 다 아님** → 그 사이 다른 쓰기가 있었다. 덮어쓰지 않고 충돌로 남긴다.
 - ACK 는 ④가 끝난 뒤에만 보낸다.
 
 ### 12.5 단계 경계와 판정 순서
 - **로컬 확인(L)을 Phase 1 로 앞당긴다.** add·review·resolve 가 L 에 의존하기 때문이다.
-- Phase 1 에는 서명 승인(A)이 없다. 그래서 Phase 1 에서는 **원격 덮어쓰기를 자동 적용하지 않고 전부 review 대상으로 보류**한다. 자동 적용은 Phase 1b(검증기)부터 켠다.
+- Phase 1 에는 서명 승인(A)이 없다. 판정표는 그대로 쓰되, **7번(자동 앞으로 감기)이 Phase 1 에서는 절대 걸리지 않는다**(검증된 승인이 없으므로). 그래서 parent 가 맞는 원격 덮어쓰기는 8번(review 보류), parent 가 다르면 9번(충돌)이다. 자동 적용은 Phase 1b 부터다.
+- resolve: Phase 1 에서는 보내는 기기에서 L 만 요구한다. 받는 기기는 그 해결 메시지를 승인 없는 변경으로 보고 review 에 보류한다(§2.4 의 후보 포함 검사는 그대로). Phase 1b 부터 L + A 로 올리고, 승인이 붙은 해결은 자동 적용한다.
 - `decide` 는 검증기가 통과시킨 승인만 받는다(`Option<VerifiedApproval>`). 서명 바이트를 직접 보지 않는다.
 - 판정 순서(위에서 먼저 걸리는 것이 이긴다):
 
