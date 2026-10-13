@@ -44,6 +44,7 @@ impl Generations {
     /// Human review accepts an offer for exactly the specified peer (§2.1, §12.2).
     pub fn accept(&mut self, name: &str, peer: PeerId) -> Registration {
         let owned = self.owned.entry(name.into()).or_default();
+        owned.generation = owned.generation.max(1);
         owned.peers.insert(peer);
         Registration {
             name: name.into(),
@@ -98,7 +99,8 @@ impl Generations {
         let names = self.remote.entry(peer).or_default();
         if names
             .get(&leave.name)
-            .is_some_and(|r| r.generation > leave.generation)
+            .is_some_and(|r| r.generation > leave.generation
+                || (r.generation == leave.generation && r.accepted))
         {
             return false;
         }
@@ -110,6 +112,11 @@ impl Generations {
             },
         );
         true
+    }
+
+    /// Last receiver generation learned from either Accept or Leave; zero means unknown.
+    pub fn known_generation(&self, peer: &PeerId, name: &str) -> u64 {
+        self.remote.get(peer).and_then(|names| names.get(name)).map_or(0, |r| r.generation)
     }
 
     /// Returns the receiver-issued generation only after Accept and before Leave (§12.2).

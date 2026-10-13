@@ -134,6 +134,15 @@ pub(crate) fn apply_items<H: Host>(
     items: &[Item],
     conflicts: Conflicts,
     from_device: &str,
+    journal: Option<&mut dyn Journal>,
+) -> Result<Applied> {
+    let _items = ctx.state.lock_items(ctx.store.namespace())?;
+    let _state = ctx.state.lock()?;
+    apply_items_locked(ctx, items, conflicts, from_device, journal)
+}
+
+pub(crate) fn apply_items_locked<H: Host>(
+    ctx: &mut Ctx<'_, H>, items: &[Item], conflicts: Conflicts, from_device: &str,
     mut journal: Option<&mut dyn Journal>,
 ) -> Result<Applied> {
     let mut applied = Applied::default();
@@ -239,11 +248,13 @@ fn apply_one<H: Host>(
     if value.len() > MAX_VALUE_LEN {
         return Ok(ItemStatus::Rejected(REJECT_TOO_LARGE));
     }
+    if conflicts != Conflicts::Policy(ConflictPolicy::Rename) {
+        if let Some(status) = crate::sync::legacy(ctx, item, from_device)? { return Ok(status); }
+    }
     let policy = match conflicts {
         Conflicts::Policy(policy) => policy,
         Conflicts::Ask { overwrite } => {
             {
-                let _items = ctx.state.lock_items(ctx.store.namespace())?;
                 if let Some(status) = settle_without_conflict(ctx, item, from_device, mark)? {
                     return Ok(status);
                 }
@@ -252,12 +263,12 @@ fn apply_one<H: Host>(
             ask(ctx, &item.name, overwrite)?
         }
     };
-    let _items = ctx.state.lock_items(ctx.store.namespace())?;
     if let Some(status) = settle_without_conflict(ctx, item, from_device, mark)? {
         return Ok(status);
     }
     match policy {
         ConflictPolicy::Skip => Ok(ItemStatus::SkippedConflict),
+        ConflictPolicy::Overwrite if !ctx.interactive() => Ok(ItemStatus::SkippedConflict),
         ConflictPolicy::Overwrite => {
             mark(&ctx.state)?;
             store(ctx, item.name.as_str(), item, from_device)?;

@@ -52,11 +52,13 @@ pub(super) async fn inbox<H: Host>(ctx: &mut Ctx<'_, H>, args: InboxArgs) -> Res
             Err(e) => return Err(CliError::from(e).context(tr!("reading this device's inbox"))),
         }
     }
+    let _items = ctx.state.lock_items(ctx.store.namespace())?;
     let _lock = ctx.state.lock()?;
     let listing = match relay.list_messages(&inbox_id, &owner, Duration::ZERO).await {
         Ok(listing) => listing,
         Err(e) if e.is(ErrorCode::Unauthorized) => {
             drop(_lock);
+            drop(_items);
             return lost_inbox(ctx, &relay, &inbox_id).await;
         }
         Err(e) => return Err(CliError::from(e).context(tr!("reading this device's inbox"))),
@@ -85,11 +87,11 @@ pub(super) async fn inbox<H: Host>(ctx: &mut Ctx<'_, H>, args: InboxArgs) -> Res
         let opened = message_body(message)
             .map_err(|_| InboxError::Malformed)
             .and_then(|body| {
-                inbox::open(
+                inbox::open_any(
                     &body,
                     &key_refs,
                     |fp| peers.by_fingerprint(fp).map(|p| p.device_pk),
-                    |id| seen.contains(id),
+                    |_| false,
                     now,
                 )
             });
@@ -127,7 +129,26 @@ pub(super) async fn inbox<H: Host>(ctx: &mut Ctx<'_, H>, args: InboxArgs) -> Res
         let label = peers
             .by_fingerprint(&opened.sender_fp)
             .map_or_else(|| opened.sender_fp.short(), |p| p.label.to_string());
-        let names: Vec<&str> = opened.items.iter().map(|i| i.name.as_str()).collect();
+        let until = opened.keep_seen_until();
+        let items = match &opened.body {
+            inbox::Body::Sync(message_body) => {
+                crate::sync::receive(ctx, &opened.sender_fp.to_hex(), message_body)?;
+                seen.insert(&opened.msg_id, until);
+                ctx.state.save_seen(&seen)?;
+                delete(ctx, &relay, &inbox_id, &owner, &message.msg_id).await;
+                continue;
+            }
+            inbox::Body::Items(items) => {
+                if seen.contains(&opened.msg_id) {
+                    say!(ctx, "{}", tr!("A message was dropped: {error} (or one this device stored before but couldn't delete).", error = InboxError::Replay));
+                    outcome.failed(InboxError::Replay.exit_code());
+                    delete(ctx, &relay, &inbox_id, &owner, &message.msg_id).await;
+                    continue;
+                }
+                items
+            }
+        };
+        let names: Vec<&str> = items.iter().map(|i| i.name.as_str()).collect();
         let (n, names) = (names.len(), names.join(", "));
         let text = if n == 1 {
             tr!(
@@ -163,7 +184,7 @@ pub(super) async fn inbox<H: Host>(ctx: &mut Ctx<'_, H>, args: InboxArgs) -> Res
                 id: opened.msg_id,
                 until,
             };
-            apply::apply_items(ctx, &opened.items, conflicts, &label, Some(&mut journal))?
+            apply::apply_items_locked(ctx, items, conflicts, &label, Some(&mut journal))?
         };
         apply::print_results(ctx, &applied.results, true);
         if applied.done_before > 0 {
@@ -258,6 +279,13 @@ async fn lost_inbox<H: Host>(ctx: &mut Ctx<'_, H>, relay: &H::Relay, lost: &str)
     let (_, replaced) = pairing::replace_lost_inbox(ctx, relay, &lock, lost).await?;
     drop(lock);
     if replaced {
+        if ctx.state.root().join("sync.json").exists() {
+            let _items = ctx.state.lock_items(ctx.store.namespace())?;
+            let _state = ctx.state.lock()?;
+            let mut sync = crate::sync::State::load(&ctx.state)?;
+            sync.reconnect = true;
+            sync.save(&ctx.state)?;
+        }
         pairing::lost_inbox_notice(ctx);
     } else {
         say!(

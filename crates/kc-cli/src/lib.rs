@@ -31,6 +31,7 @@ pub mod policy;
 pub mod settings;
 pub mod state;
 mod values;
+mod sync;
 
 pub use console::{Console, PromptError, TermConsole};
 pub use error::CliError;

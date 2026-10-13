@@ -6,9 +6,10 @@ mod device;
 mod doctor;
 mod inbox;
 mod items;
-mod pairing;
+pub(crate) mod pairing;
 mod peers;
 mod transfer;
+mod sync;
 
 use std::ffi::OsString;
 use std::fmt;
@@ -74,7 +75,11 @@ async fn execute<H: Host>(host: &mut H, cli: Cli) -> Result<i32> {
     }
     let settings = Settings::load(state.root())?;
     let policy = Policy::new(interactivity, settings.agent_code_send);
-    policy.check(&policy::gates(&cli.command, interactivity.stdin_terminal))?;
+    let mut gates = policy::gates(&cli.command, interactivity.stdin_terminal);
+    if !crate::sync::State::load(&state)?.items.is_empty() {
+        gates.retain(|gate| *gate != policy::Gate::Overwrite);
+    }
+    policy.check(&gates)?;
     let store = Keychain::new(host.open_store(policy.interactive())?);
     let mut ctx = Ctx {
         host,
@@ -91,18 +96,19 @@ async fn execute<H: Host>(host: &mut H, cli: Cli) -> Result<i32> {
 async fn dispatch<H: Host>(ctx: &mut Ctx<'_, H>, command: Command) -> Result<i32> {
     pairing::expire_prev_key(ctx);
     match command {
-        Command::Set(args) => items::set(ctx, args),
+        Command::Set(args) => { let code = items::set(ctx, args)?; crate::sync::send_after_write(ctx).await; Ok(code) },
         Command::Get(args) => items::get(ctx, args),
         Command::Exec(args) => items::exec(ctx, args),
         Command::List(args) => items::list(ctx, args),
         Command::Rm(args) => items::rm(ctx, args),
-        Command::Restore(args) => items::restore(ctx, args),
-        Command::Adopt(args) => items::adopt(ctx, args),
+        Command::Restore(args) => { let code = items::restore(ctx, args)?; crate::sync::send_after_write(ctx).await; Ok(code) },
+        Command::Adopt(args) => { let code = items::adopt(ctx, args)?; crate::sync::send_after_write(ctx).await; Ok(code) },
         Command::Send(args) => transfer::send(ctx, args).await,
         Command::Receive(args) => transfer::receive(ctx, args).await,
         Command::Pair(args) => transfer::pair(ctx, args).await,
         Command::Peers(args) => peers::peers(ctx, args).await,
-        Command::Inbox(args) => inbox::inbox(ctx, args).await,
+        Command::Inbox(args) => { let code = inbox::inbox(ctx, args).await?; crate::sync::flush(ctx, false).await?; Ok(code.max(crate::sync::pending_code(ctx)?)) },
+        Command::Sync(args) => sync::run(ctx, args).await,
         Command::Device(args) => device::device(ctx, args).await,
         Command::Doctor(_) => unreachable!("handled before the store is opened"),
     }

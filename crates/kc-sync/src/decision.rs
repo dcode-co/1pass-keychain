@@ -231,6 +231,12 @@ pub fn decide(
         }
         return advance(state, incoming, false, true);
     }
+    // A resolve can reach a peer which never saw the competing changes. Its only
+    // unresolved head is its current one; complete multi-parent coverage still requires
+    // review in Phase 1, including when the selected value already matches (§2.4).
+    if incoming.parents.len() > 1 && incoming.parents.contains(&state.head) && approval.is_none() {
+        return Decision::held(HoldReason::Resolve);
+    }
     // Row 6 is metadata-only convergence; Retire has no value to converge.
     if incoming.value_fp == Some(current_fp) {
         return advance(state, incoming, true, false);

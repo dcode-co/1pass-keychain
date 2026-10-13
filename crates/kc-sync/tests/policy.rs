@@ -829,15 +829,15 @@ fn generations_are_receiver_owned_scoped_and_bumped_on_rm() {
     let b = peer("b");
     assert_eq!(g.outgoing_generation(&a, "key"), None);
     let accept = g.accept("key", a.clone());
-    assert_eq!(accept.generation, 0);
+    assert_eq!(accept.generation, 1);
     assert!(g.includes("key", &a));
     assert!(!g.includes("key", &b));
     let (leave, peers) = g.rm("key").unwrap();
-    assert_eq!(leave.generation, 1);
+    assert_eq!(leave.generation, 2);
     assert_eq!(peers.len(), 1);
     assert!(!g.includes("key", &a));
     let accept = g.accept("key", b.clone());
-    assert_eq!(accept.generation, 1);
+    assert_eq!(accept.generation, 2);
     assert!(g.includes("key", &b));
 }
 #[test]
@@ -910,4 +910,40 @@ fn slot_budget_round_trip_retains_snapshot_pins() {
         b.reserve("checkpoint", SlotKind::Checkpoint),
         Reservation::Refused
     );
+}
+
+#[test]
+fn accepted_generation_starts_at_one_and_known_generation_survives_leave() {
+    let mut g = Generations::default();
+    let p = peer("a");
+    assert_eq!(g.generation("key"), 0);
+    assert_eq!(g.known_generation(&p, "key"), 0);
+    let accepted = g.accept("key", p.clone());
+    assert_eq!(accepted.generation, 1);
+    g.received_accept(p.clone(), accepted);
+    assert_eq!(g.known_generation(&p, "key"), 1);
+    g.received_leave(p.clone(), Registration { name: "key".into(), generation: 2 });
+    assert_eq!(g.known_generation(&p, "key"), 2);
+    assert_eq!(g.outgoing_generation(&p, "key"), None);
+}
+
+#[test]
+fn reordered_leave_cannot_undo_reacceptance_of_the_same_generation() {
+    let mut g = Generations::default();
+    let p = peer("a");
+    let r = Registration { name: "key".into(), generation: 2 };
+    assert!(g.received_accept(p.clone(), r.clone()));
+    assert!(!g.received_leave(p.clone(), r));
+    assert_eq!(g.outgoing_generation(&p, "key"), Some(2));
+}
+
+#[test]
+fn complete_unsigned_resolve_is_held_even_if_peer_missed_the_conflict() {
+    let s = state();
+    let mut i = incoming();
+    i.parents = vec![s.head, v(99)];
+    i.value_fp = Some(f(1));
+    let d = decide(&s, f(1), &i, false, None, true);
+    assert_eq!(d.ack, AckResult::Held);
+    assert!(matches!(d.transition, Transition::Hold { reason: HoldReason::Resolve }));
 }

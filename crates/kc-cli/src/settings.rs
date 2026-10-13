@@ -33,17 +33,20 @@ pub const ENV_RELAY: &str = "KC_RELAY";
 const HEADER: &str = "# kc device settings (no secrets here). `kc doctor` checks this file.\n";
 
 /// The fields kc knows; `kc doctor` reports any others.
-const KNOWN_KEYS: [&str; 6] = [
+const KNOWN_KEYS: [&str; 7] = [
     "label",
     "relay",
     "agent_code_send",
     "allow_http",
     "inbox_id",
     "device_key_prev_until",
+    "sync",
 ];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
+    #[serde(default, skip_serializing_if = "SyncSettings::is_default")]
+    pub sync: SyncSettings,
     /// The label this device suggests when pairing. Default: the host name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
@@ -62,6 +65,23 @@ pub struct Settings {
     /// inbox messages.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_key_prev_until: Option<i64>,
+}
+
+/// Human-edited sync settings. Scheduling and signed-approval endpoints are reserved
+/// for their later phases; Phase 1 always enforces the design's fixed breaker caps.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SyncSettings {
+    pub interval: Option<String>,
+    pub max_remote_overwrites: usize,
+    pub max_proposals_per_day: usize,
+    pub approver_url: Option<String>,
+}
+impl Default for SyncSettings {
+    fn default() -> Self { Self { interval: None, max_remote_overwrites: 1, max_proposals_per_day: 32, approver_url: None } }
+}
+impl SyncSettings {
+    fn is_default(&self) -> bool { self == &Self::default() }
 }
 
 impl Settings {
@@ -336,6 +356,7 @@ mod tests {
             allow_http: true,
             inbox_id: Some("AAAAAAAAAAAAAAAAAAAAAA".into()),
             device_key_prev_until: Some(1_760_000_000),
+            sync: SyncSettings::default(),
         };
         s.save(dir.path()).unwrap();
         assert_eq!(Settings::load(dir.path()).unwrap(), s);
