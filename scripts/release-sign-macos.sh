@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Signs and notarizes the macOS binaries of a draft release made by
 # .github/workflows/release.yml, uploads them over the unsigned ones and
-# updates SHA256SUMS. With --publish it then publishes the draft.
+# updates SHA256SUMS. With --publish it then publishes the draft and points
+# the Homebrew formula at it (scripts/update-homebrew-tap.sh).
 #
 #   scripts/release-sign-macos.sh v0.1.0 [--publish]
 #
@@ -20,6 +21,7 @@
 # keeps the keychain access a user already granted to kc.
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "$0")" && pwd)"  # the script cd's below
 tag=${1:?usage: $0 vX.Y.Z [--publish]}
 publish=${2:-}
 repo=${KC_REPO:-dcode-co/1pass-keychain}
@@ -81,6 +83,7 @@ echo "uploaded ${#archives[@]} signed archives and SHA256SUMS to the $tag draft"
 if [ "$publish" = --publish ]; then
   gh release edit "$tag" --repo "$repo" --draft=false
   echo "published $tag"
+  "$script_dir/update-homebrew-tap.sh" "$tag"
 else
   echo "review the draft, then: gh release edit $tag --repo $repo --draft=false"
 fi
