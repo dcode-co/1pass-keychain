@@ -111,6 +111,10 @@ pub enum SyncMsg {
     },
     Offer {
         name: ItemName,
+        /// The receiver's registration generation for `name` as the sender last learned it
+        /// from an `Accept` or `Leave` (0 = never). The receiver ignores an offer whose
+        /// value is below its current generation: it was sent before a `sync rm` (§2.1).
+        known_generation: u64,
         vid: Vid,
         lineage: Vec<Vid>,
         kind: ItemKind,

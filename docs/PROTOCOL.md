@@ -182,7 +182,7 @@ Change      { name: ItemName, generation: u64, new_vid: Vid, parents: Vec<Vid>,
 AckResult   = Applied | Held | Conflict | StaleGeneration | DeferredCapacity | Rejected
 DigestEntry { name: ItemName, generation: u64, head: Vid }
 SyncMsg     = Hello { features: Vec<String>, is_reply: bool }
-            | Offer { name: ItemName, vid: Vid, lineage: Vec<Vid>, kind: ItemKind, value: bytes }
+            | Offer { name: ItemName, known_generation: u64, vid: Vid, lineage: Vec<Vid>, kind: ItemKind, value: bytes }
             | Accept { name: ItemName, generation: u64 }
             | Leave { name: ItemName, generation: u64 }
             | Changes { changes: Vec<Change> }

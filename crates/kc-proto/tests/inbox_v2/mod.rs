@@ -69,6 +69,7 @@ fn cases() -> Vec<(&'static str, Body)> {
             "offer",
             Body::Sync(SyncMsg::Offer {
                 name: name("config.env"),
+                known_generation: 3,
                 vid: Vid([0x55; 16]),
                 lineage: vec![Vid([0x66; 16])],
                 kind: ItemKind::File,
@@ -473,6 +474,7 @@ fn v2_size_and_envelope_checks() {
     let (alice, bob) = keys();
     let body = Body::Sync(SyncMsg::Offer {
         name: name("large"),
+        known_generation: 0,
         vid: Vid([1; 16]),
         lineage: vec![],
         kind: ItemKind::File,
