@@ -84,6 +84,7 @@ if [ "$publish" = --publish ]; then
   gh release edit "$tag" --repo "$repo" --draft=false
   echo "published $tag"
   "$script_dir/update-homebrew-tap.sh" "$tag"
+  echo "next, publish to npm (needs npm login): scripts/publish-npm.sh $tag"
 else
   echo "review the draft, then: gh release edit $tag --repo $repo --draft=false"
 fi

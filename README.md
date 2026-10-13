@@ -37,6 +37,14 @@ With [Homebrew](https://brew.sh) on macOS or Linux:
 $ brew install dcode-co/tap/kc
 ```
 
+With npm or [Bun](https://bun.sh) on macOS, Linux or Windows. The package is
+`1pass-keychain`; the command it installs is `kc`:
+
+```console
+$ npm install -g 1pass-keychain        # or: bun install -g 1pass-keychain
+$ npx 1pass-keychain doctor            # or: bunx 1pass-keychain doctor (no install)
+```
+
 Or download the archive for your system from
 [Releases](https://github.com/dcode-co/1pass-keychain/releases) and put `kc`
 on your `PATH`:
