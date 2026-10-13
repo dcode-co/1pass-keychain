@@ -78,10 +78,19 @@ pub struct SyncSettings {
     pub approver_url: Option<String>,
 }
 impl Default for SyncSettings {
-    fn default() -> Self { Self { interval: None, max_remote_overwrites: 1, max_proposals_per_day: 32, approver_url: None } }
+    fn default() -> Self {
+        Self {
+            interval: None,
+            max_remote_overwrites: 1,
+            max_proposals_per_day: 32,
+            approver_url: None,
+        }
+    }
 }
 impl SyncSettings {
-    fn is_default(&self) -> bool { self == &Self::default() }
+    fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
 }
 
 impl Settings {

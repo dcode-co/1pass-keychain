@@ -1,10 +1,10 @@
 //! Public metadata contains neither values nor HMAC fingerprints. Secret transaction
 //! records live in immutable keychain slots, referenced by the durable journal pointer.
-use std::collections::{BTreeMap, BTreeSet};
-use serde::{Deserialize, Serialize};
-use kc_proto::sync::{Vid, ItemKind, ChangeId, AckResult};
+use crate::{commands::Ctx, error::Result, host::Host, state::StateDir};
+use kc_proto::sync::{AckResult, ChangeId, ItemKind, Vid};
 use kc_sync::{Generations, Limiter, Outbox, SlotKind};
-use crate::{commands::Ctx, host::Host, error::Result, state::StateDir};
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Item {
@@ -27,7 +27,11 @@ pub struct Version {
 }
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum CandidateKind { Proposal, Held, Conflict }
+pub enum CandidateKind {
+    Proposal,
+    Held,
+    Conflict,
+}
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Candidate {
     pub peer: String,
@@ -119,7 +123,9 @@ impl State {
     pub fn cleanup<H: Host>(&mut self, ctx: &Ctx<'_, H>) -> Result<()> {
         // Metadata is durable before deletion. A restart repeats only harmless deletes.
         self.save(&ctx.state)?;
-        for slot in &self.gc { ctx.store.delete_internal(slot)?; }
+        for slot in &self.gc {
+            ctx.store.delete_internal(slot)?;
+        }
         self.gc.clear();
         self.save(&ctx.state)
     }

@@ -30,8 +30,8 @@ mod local_auth;
 pub mod policy;
 pub mod settings;
 pub mod state;
-mod values;
 mod sync;
+mod values;
 
 pub use console::{Console, PromptError, TermConsole};
 pub use error::CliError;

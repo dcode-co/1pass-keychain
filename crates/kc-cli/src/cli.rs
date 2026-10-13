@@ -395,13 +395,23 @@ pub enum SyncCommand {
         peers: Vec<String>,
     },
     /// Remove items from this device's sync set, keeping their values
-    Rm { #[arg(required = true)] names: Vec<String> },
+    Rm {
+        #[arg(required = true)]
+        names: Vec<String>,
+    },
     /// Manage the paired devices used for sync
-    Peer { #[command(subcommand)] command: SyncPeerCommand },
+    Peer {
+        #[command(subcommand)]
+        command: SyncPeerCommand,
+    },
     /// Review proposals and held changes
     Review,
     /// Resolve a conflict with a new version
-    Resolve { name: String, #[arg(long)] keep: String },
+    Resolve {
+        name: String,
+        #[arg(long)]
+        keep: String,
+    },
     /// Restore the recovery checkpoint
     RestoreCheckpoint { name: String },
     /// Hold all incoming sync changes

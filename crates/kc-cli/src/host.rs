@@ -31,7 +31,9 @@ pub trait Host {
     }
     /// Test injection after a sync transaction's keychain write; production never interrupts.
     #[doc(hidden)]
-    fn sync_interrupt_after_write(&mut self) -> bool { false }
+    fn sync_interrupt_after_write(&mut self) -> bool {
+        false
+    }
     /// A process environment variable (`CI`, `CLAUDECODE`, `KC_RELAY`).
     fn env_var(&self, key: &str) -> Option<OsString>;
     fn stdin_is_terminal(&self) -> bool;

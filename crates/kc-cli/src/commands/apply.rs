@@ -142,7 +142,10 @@ pub(crate) fn apply_items<H: Host>(
 }
 
 pub(crate) fn apply_items_locked<H: Host>(
-    ctx: &mut Ctx<'_, H>, items: &[Item], conflicts: Conflicts, from_device: &str,
+    ctx: &mut Ctx<'_, H>,
+    items: &[Item],
+    conflicts: Conflicts,
+    from_device: &str,
     mut journal: Option<&mut dyn Journal>,
 ) -> Result<Applied> {
     let mut applied = Applied::default();
@@ -249,7 +252,9 @@ fn apply_one<H: Host>(
         return Ok(ItemStatus::Rejected(REJECT_TOO_LARGE));
     }
     if conflicts != Conflicts::Policy(ConflictPolicy::Rename) {
-        if let Some(status) = crate::sync::legacy(ctx, item, from_device)? { return Ok(status); }
+        if let Some(status) = crate::sync::legacy(ctx, item, from_device)? {
+            return Ok(status);
+        }
     }
     let policy = match conflicts {
         Conflicts::Policy(policy) => policy,

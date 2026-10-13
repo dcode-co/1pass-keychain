@@ -140,7 +140,14 @@ pub(super) async fn inbox<H: Host>(ctx: &mut Ctx<'_, H>, args: InboxArgs) -> Res
             }
             inbox::Body::Items(items) => {
                 if seen.contains(&opened.msg_id) {
-                    say!(ctx, "{}", tr!("A message was dropped: {error} (or one this device stored before but couldn't delete).", error = InboxError::Replay));
+                    say!(
+                        ctx,
+                        "{}",
+                        tr!(
+                            "A message was dropped: {error} (or one this device stored before but couldn't delete).",
+                            error = InboxError::Replay
+                        )
+                    );
                     outcome.failed(InboxError::Replay.exit_code());
                     delete(ctx, &relay, &inbox_id, &owner, &message.msg_id).await;
                     continue;

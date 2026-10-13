@@ -57,6 +57,21 @@ impl Generations {
         self.owned.get(name).is_some_and(|o| o.peers.contains(peer))
     }
 
+    /// Removes one scope member without changing generation; send Leave only to this peer (§12.2).
+    pub fn remove_peer(&mut self, name: &str, peer: &PeerId) -> Option<(Registration, PeerId)> {
+        let owned = self.owned.get_mut(name)?;
+        if !owned.peers.remove(peer) {
+            return None;
+        }
+        Some((
+            Registration {
+                name: name.into(),
+                generation: owned.generation,
+            },
+            peer.clone(),
+        ))
+    }
+
     /// Removes local membership and bumps its generation; send Leave to returned peers (§12.2).
     pub fn rm(
         &mut self,
@@ -97,11 +112,9 @@ impl Generations {
     /// Records a peer's Leave without permitting reordered older messages to roll it back (§12.2).
     pub fn received_leave(&mut self, peer: PeerId, leave: Registration) -> bool {
         let names = self.remote.entry(peer).or_default();
-        if names
-            .get(&leave.name)
-            .is_some_and(|r| r.generation > leave.generation
-                || (r.generation == leave.generation && r.accepted))
-        {
+        if names.get(&leave.name).is_some_and(|r| {
+            r.generation > leave.generation || (r.generation == leave.generation && r.accepted)
+        }) {
             return false;
         }
         names.insert(
@@ -116,7 +129,10 @@ impl Generations {
 
     /// Last receiver generation learned from either Accept or Leave; zero means unknown.
     pub fn known_generation(&self, peer: &PeerId, name: &str) -> u64 {
-        self.remote.get(peer).and_then(|names| names.get(name)).map_or(0, |r| r.generation)
+        self.remote
+            .get(peer)
+            .and_then(|names| names.get(name))
+            .map_or(0, |r| r.generation)
     }
 
     /// Returns the receiver-issued generation only after Accept and before Leave (§12.2).

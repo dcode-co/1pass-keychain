@@ -59,7 +59,7 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = ["s
 objc2-local-authentication = { version = "0.3.2", default-features = false, features = ["std", "LAContext", "LAError", "block2"] }
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.58.0", default-features = false, features = ["Security_Credentials_UI", "Foundation"] }
+windows = { version = "0.58.0", default-features = false, features = ["Security_Credentials_UI", "Foundation", "Win32_System_WinRT", "Win32_UI_WindowsAndMessaging", "Win32_System_Console", "Win32_Foundation"] }
 
 [dev-dependencies]
 kc-proto = { workspace = true, features = ["test-util"] }

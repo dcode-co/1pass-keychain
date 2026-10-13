@@ -1,16 +1,39 @@
+#![allow(unsafe_code)] // Window handles and WinRT interop require Win32 FFI.
+
+use windows::Foundation::IAsyncOperation;
 use windows::Security::Credentials::UI::{UserConsentVerificationResult, UserConsentVerifier};
-use windows::core::HSTRING;
+use windows::Win32::System::Console::GetConsoleWindow;
+use windows::Win32::System::WinRT::IUserConsentVerifierInterop;
+use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+use windows::core::{HSTRING, factory};
 
 use super::LocalAuthOutcome;
 
 pub(super) fn confirm(reason: &str) -> LocalAuthOutcome {
     // Request a new verification every time; never retain a previous result.
-    match UserConsentVerifier::RequestVerificationAsync(&HSTRING::from(reason))
-        .and_then(|request| request.get())
-    {
+    match request_verification(reason) {
         Ok(result) => outcome(result),
         Err(error) => LocalAuthOutcome::Unavailable(format!("Windows Hello: {error}")),
     }
+}
+
+fn request_verification(reason: &str) -> windows::core::Result<UserConsentVerificationResult> {
+    let verifier = factory::<UserConsentVerifier, IUserConsentVerifierInterop>()?;
+    // SAFETY: These calls take no pointers; the returned handles are borrowed
+    // for the OS verification UI and are never freed or dereferenced here.
+    let hwnd = unsafe {
+        let console = GetConsoleWindow();
+        if console.0.is_null() {
+            GetForegroundWindow()
+        } else {
+            console
+        }
+    };
+    // SAFETY: The OS-provided window handle and owned HSTRING remain valid
+    // for the call; the requested interface is the documented result type.
+    let request: IAsyncOperation<UserConsentVerificationResult> =
+        unsafe { verifier.RequestVerificationForWindowAsync(hwnd, &HSTRING::from(reason))? };
+    request.get()
 }
 
 fn outcome(result: UserConsentVerificationResult) -> LocalAuthOutcome {

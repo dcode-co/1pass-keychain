@@ -539,3 +539,119 @@ fn vid_serde_and_secret_debug() {
         assert!(!debug.contains("TEST=1"));
     }
 }
+
+fn assert_sync_validation(msg: SyncMsg, valid: bool) {
+    let bytes = postcard::to_allocvec(&msg).unwrap();
+    assert_eq!(postcard::from_bytes::<SyncMsg>(&bytes).is_ok(), valid);
+    let json = serde_json::to_string(&msg).unwrap();
+    assert_eq!(serde_json::from_str::<SyncMsg>(&json).is_ok(), valid);
+    assert_eq!(msg.validate().is_ok(), valid);
+    if !valid {
+        assert_eq!(msg.validate().unwrap_err(), InboxError::Malformed);
+    }
+    let body = Body::Sync(msg);
+    let opened = bob_opens(&seal_plain(&plain(body.clone()), INFO_PREFIX_V2), NOW);
+    let (alice, bob) = keys();
+    let sealed = seal_v2(&alice, bob.public(), &body, TTL, NOW);
+    if valid {
+        assert!(opened.is_ok());
+        assert!(sealed.is_ok());
+    } else {
+        assert_eq!(opened.unwrap_err(), InboxError::Malformed);
+        assert_eq!(sealed.unwrap_err(), InboxError::Malformed);
+    }
+}
+
+#[test]
+fn offer_lineage_limit_on_decode_validate_seal_and_open() {
+    for n in [0, 64, 65] {
+        let msg = SyncMsg::Offer {
+            name: name("token"),
+            known_generation: 0,
+            vid: Vid([1; 16]),
+            lineage: vec![Vid([7; 16]); n],
+            kind: ItemKind::Text,
+            value: SecretBytes::from_slice(b"test-secret"),
+        };
+        let bytes = postcard::to_allocvec(&msg).unwrap();
+        assert_eq!(postcard::from_bytes::<SyncMsg>(&bytes).is_ok(), n <= 64);
+        let json = serde_json::to_string(&msg).unwrap();
+        assert_eq!(serde_json::from_str::<SyncMsg>(&json).is_ok(), n <= 64);
+        assert_sync_validation(msg, n <= 64);
+    }
+}
+
+#[test]
+fn change_parents_limit_on_decode_validate_seal_and_open() {
+    for n in [0, 64, 65, 66] {
+        let mut c = change();
+        c.parents = vec![Vid([7; 16]); n];
+        let bytes = postcard::to_allocvec(&c).unwrap();
+        assert_eq!(postcard::from_bytes::<Change>(&bytes).is_ok(), n <= 65);
+        let json = serde_json::to_string(&c).unwrap();
+        assert_eq!(serde_json::from_str::<Change>(&json).is_ok(), n <= 65);
+        assert_eq!(c.validate().is_ok(), n <= 65);
+        assert_sync_validation(SyncMsg::Changes { changes: vec![c] }, n <= 65);
+    }
+}
+
+#[test]
+fn duplicate_digest_names_are_malformed() {
+    let entry = DigestEntry {
+        name: name("token"),
+        generation: 1,
+        head: Vid([1; 16]),
+    };
+    for same_metadata in [true, false] {
+        let mut other = entry.clone();
+        if !same_metadata {
+            other.generation += 1;
+            other.head = Vid([2; 16]);
+        }
+        assert_sync_validation(
+            SyncMsg::Digest {
+                entries: vec![entry.clone(), other],
+            },
+            false,
+        );
+    }
+    let mut other = entry.clone();
+    other.name = name("other");
+    assert_sync_validation(
+        SyncMsg::Digest {
+            entries: vec![entry, other],
+        },
+        true,
+    );
+}
+
+#[test]
+fn duplicate_ack_change_ids_are_malformed() {
+    let id = ChangeId {
+        name: name("token"),
+        generation: 1,
+        new_vid: Vid([1; 16]),
+    };
+    for result in [AckResult::Applied, AckResult::Rejected] {
+        assert_sync_validation(
+            SyncMsg::Ack {
+                results: vec![(id.clone(), AckResult::Applied), (id.clone(), result)],
+            },
+            false,
+        );
+    }
+    for field in 0..3 {
+        let mut other = id.clone();
+        match field {
+            0 => other.name = name("other"),
+            1 => other.generation += 1,
+            _ => other.new_vid = Vid([2; 16]),
+        }
+        assert_sync_validation(
+            SyncMsg::Ack {
+                results: vec![(id.clone(), AckResult::Applied), (other, AckResult::Held)],
+            },
+            true,
+        );
+    }
+}

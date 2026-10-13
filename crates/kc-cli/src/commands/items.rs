@@ -331,8 +331,14 @@ pub(super) fn rm<H: Host>(ctx: &mut Ctx<'_, H>, args: RmArgs) -> Result<i32> {
     {
         let _items = ctx.state.lock_items(ctx.store.namespace())?;
         let _state = ctx.state.lock()?;
-        if crate::sync::State::load(&ctx.state)?.items.contains_key(name.as_str()) {
-            return Err(CliError::interaction(tr!("Run `kc sync rm {name}` before deleting this item.", name = name)));
+        if crate::sync::State::load(&ctx.state)?
+            .items
+            .contains_key(name.as_str())
+        {
+            return Err(CliError::interaction(tr!(
+                "Run `kc sync rm {name}` before deleting this item.",
+                name = name
+            )));
         }
     }
     if ctx.interactive() && !args.yes {
@@ -350,8 +356,14 @@ pub(super) fn rm<H: Host>(ctx: &mut Ctx<'_, H>, args: RmArgs) -> Result<i32> {
     let deleted = {
         let _items = ctx.state.lock_items(ctx.store.namespace())?;
         let _state = ctx.state.lock()?;
-        if crate::sync::State::load(&ctx.state)?.items.contains_key(name.as_str()) {
-            return Err(CliError::interaction(tr!("Run `kc sync rm {name}` before deleting this item.", name = name)));
+        if crate::sync::State::load(&ctx.state)?
+            .items
+            .contains_key(name.as_str())
+        {
+            return Err(CliError::interaction(tr!(
+                "Run `kc sync rm {name}` before deleting this item.",
+                name = name
+            )));
         }
         ctx.store.delete(name.as_str())?
     };
@@ -386,8 +398,9 @@ pub(super) fn adopt<H: Host>(ctx: &mut Ctx<'_, H>, args: AdoptArgs) -> Result<i3
             ))
         })?,
     };
-    let outcome = crate::sync::observed_write(ctx, name.as_str(), |store|
-        store.adopt(&args.service, args.account.as_deref(), name.as_str()))?;
+    let outcome = crate::sync::observed_write(ctx, name.as_str(), |store| {
+        store.adopt(&args.service, args.account.as_deref(), name.as_str())
+    })?;
     match outcome.change {
         Change::Created => say!(
             ctx,

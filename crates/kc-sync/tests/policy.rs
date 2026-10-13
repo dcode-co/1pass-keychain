@@ -262,13 +262,15 @@ fn convergence_is_symmetric_even_when_lineage_truncates() {
     };
     let da = decide(&a, f(1), &from(&b), false, None, true);
     let db = decide(&b, f(1), &from(&a), false, None, true);
-    assert_eq!(da, db);
-    let Transition::Advance { head, lineage, .. } = da.transition else {
-        panic!()
-    };
-    assert_eq!(head, v(80));
-    assert_eq!(lineage.len(), 64);
-    assert!(lineage.contains(&head));
+    for d in [da, db] {
+        let Transition::Advance { head, lineage, .. } = d.transition else {
+            panic!()
+        };
+        assert_eq!(head, v(80));
+        assert_eq!(lineage.len(), 64);
+        assert!(lineage.contains(&a.head));
+        assert!(lineage.contains(&b.head));
+    }
 }
 #[test]
 fn row7_approved_direct_parent_fast_forwards() {
@@ -346,17 +348,33 @@ fn retire_requires_approval_and_never_requests_value_deletion() {
     );
     i.parents = vec![v(99)];
     held(&run(&conflicted(), &i), HoldReason::NoApproval);
-    assert_eq!(
-        decide(
-            &state(),
+    for s in [state(), conflicted()] {
+        for parents in [vec![], vec![v(99)], vec![v(1), v(3), v(4)]] {
+            i.parents = parents;
+            held(
+                &decide(
+                    &s,
+                    f(1),
+                    &i,
+                    false,
+                    Some(&VerifiedApproval::for_tests()),
+                    true,
+                ),
+                HoldReason::RetireMismatch,
+            );
+        }
+    }
+    i.parents = vec![v(1)];
+    held(
+        &decide(
+            &conflicted(),
             f(1),
             &i,
             false,
             Some(&VerifiedApproval::for_tests()),
-            true
-        )
-        .ack,
-        AckResult::Conflict
+            true,
+        ),
+        HoldReason::Resolve,
     );
 }
 #[test]
@@ -922,7 +940,13 @@ fn accepted_generation_starts_at_one_and_known_generation_survives_leave() {
     assert_eq!(accepted.generation, 1);
     g.received_accept(p.clone(), accepted);
     assert_eq!(g.known_generation(&p, "key"), 1);
-    g.received_leave(p.clone(), Registration { name: "key".into(), generation: 2 });
+    g.received_leave(
+        p.clone(),
+        Registration {
+            name: "key".into(),
+            generation: 2,
+        },
+    );
     assert_eq!(g.known_generation(&p, "key"), 2);
     assert_eq!(g.outgoing_generation(&p, "key"), None);
 }
@@ -931,7 +955,10 @@ fn accepted_generation_starts_at_one_and_known_generation_survives_leave() {
 fn reordered_leave_cannot_undo_reacceptance_of_the_same_generation() {
     let mut g = Generations::default();
     let p = peer("a");
-    let r = Registration { name: "key".into(), generation: 2 };
+    let r = Registration {
+        name: "key".into(),
+        generation: 2,
+    };
     assert!(g.received_accept(p.clone(), r.clone()));
     assert!(!g.received_leave(p.clone(), r));
     assert_eq!(g.outgoing_generation(&p, "key"), Some(2));
@@ -945,5 +972,219 @@ fn complete_unsigned_resolve_is_held_even_if_peer_missed_the_conflict() {
     i.value_fp = Some(f(1));
     let d = decide(&s, f(1), &i, false, None, true);
     assert_eq!(d.ack, AckResult::Held);
-    assert!(matches!(d.transition, Transition::Hold { reason: HoldReason::Resolve }));
+    assert!(matches!(
+        d.transition,
+        Transition::Hold {
+            reason: HoldReason::Resolve
+        }
+    ));
+}
+
+#[test]
+fn convergence_cannot_inject_another_peers_future_vid() {
+    let mut a = state();
+    let mut from_b = incoming();
+    from_b.value_fp = Some(f(1));
+    from_b.lineage = Lineage::new([v(1), v(2), v(99)]);
+    let Transition::Advance { head, lineage, .. } = run(&a, &from_b).transition else {
+        panic!()
+    };
+    assert!(!lineage.contains(&v(99)));
+    a.head = head;
+    a.lineage = lineage;
+    let mut from_c = incoming();
+    from_c.new_vid = v(99);
+    from_c.parents = vec![v(0)];
+    from_c.value_fp = Some(f(3));
+    let d = run(&a, &from_c);
+    assert_eq!(d.ack, AckResult::Conflict);
+    assert!(matches!(d.transition, Transition::Conflict { .. }));
+}
+
+#[test]
+fn convergence_pins_both_heads_below_full_lineage() {
+    let mut s = state();
+    s.lineage = Lineage::new((100..164).map(v)).with_head(s.head);
+    let mut i = incoming();
+    i.value_fp = Some(f(1));
+    for new_vid in [v(0), v(2)] {
+        i.new_vid = new_vid;
+        let Transition::Advance { head, lineage, .. } = run(&s, &i).transition else {
+            panic!()
+        };
+        assert_eq!(head, s.head.max(new_vid));
+        assert_eq!(lineage.len(), 64);
+        assert!(lineage.contains(&s.head));
+        assert!(lineage.contains(&new_vid));
+    }
+}
+
+#[test]
+fn approved_resolve_records_all_parents_and_late_candidates_are_stale() {
+    let mut s = conflicted();
+    let mut i = incoming();
+    i.parents = vec![v(1), v(3), v(4), v(99)];
+    i.lineage = Lineage::new([v(77)]);
+    let d = decide(
+        &s,
+        f(1),
+        &i,
+        false,
+        Some(&VerifiedApproval::for_tests()),
+        true,
+    );
+    let Transition::Advance {
+        head,
+        lineage,
+        clear_conflict: true,
+        ..
+    } = d.transition
+    else {
+        panic!()
+    };
+    assert!(lineage.contains(&v(77)));
+    for parent in &i.parents {
+        assert!(lineage.contains(parent));
+    }
+    s.head = head;
+    s.lineage = lineage;
+    s.conflict = None;
+    for (vid, fp) in [(v(3), f(3)), (v(4), f(4)), (v(99), f(99))] {
+        let late = Incoming {
+            new_vid: vid,
+            parents: vec![v(0)],
+            value_fp: Some(fp),
+            ..incoming()
+        };
+        let d = decide(&s, f(2), &late, false, None, true);
+        assert_eq!(d.ack, AckResult::Applied);
+        assert_eq!(d.transition, Transition::Unchanged);
+    }
+}
+
+#[test]
+fn approved_fast_forward_merges_sender_lineage() {
+    let mut i = incoming();
+    i.lineage = Lineage::new([v(99)]);
+    let d = decide(
+        &state(),
+        f(1),
+        &i,
+        false,
+        Some(&VerifiedApproval::for_tests()),
+        true,
+    );
+    let Transition::Advance { lineage, .. } = d.transition else {
+        panic!()
+    };
+    assert!(lineage.contains(&v(99)));
+}
+
+#[test]
+fn slot_budget_shrink_preserves_slots_and_refuses_new_reservations() {
+    let mut b = SlotBudget::new(5);
+    for n in 0..20 {
+        b.reserve(&format!("p{n}"), SlotKind::Proposal);
+    }
+    b.set_items(0);
+    assert_eq!(b.capacity(), 16);
+    assert_eq!(b.used(), 20);
+    for n in 0..20 {
+        assert_eq!(b.kind(&format!("p{n}")), Some(SlotKind::Proposal));
+    }
+    for kind in [
+        SlotKind::Proposal,
+        SlotKind::Held,
+        SlotKind::ConflictCandidate,
+        SlotKind::Checkpoint,
+    ] {
+        assert_eq!(b.reserve("new", kind), Reservation::Refused);
+    }
+    assert_eq!(
+        b.reserve("p0", SlotKind::Proposal),
+        Reservation::Reserved { evicted: None }
+    );
+    for n in 0..5 {
+        assert!(b.release(&format!("p{n}")));
+    }
+    assert_eq!(
+        b.reserve("held", SlotKind::Held),
+        Reservation::Reserved { evicted: None }
+    );
+    b.set_items(6);
+    assert_eq!(b.capacity(), 24);
+    assert_eq!(
+        b.reserve("new", SlotKind::Proposal),
+        Reservation::Reserved { evicted: None }
+    );
+    b.set_items(usize::MAX);
+    assert_eq!(b.capacity(), usize::MAX);
+}
+
+#[test]
+fn prepare_hold_reserves_or_defers_without_eviction() {
+    let mut b = SlotBudget::new(0);
+    let OverwriteCapacity::Held(d) = b.prepare_hold("held", HoldReason::Frozen) else {
+        panic!()
+    };
+    held(&d, HoldReason::Frozen);
+    for n in 0..15 {
+        b.reserve(&format!("p{n}"), SlotKind::Proposal);
+    }
+    let OverwriteCapacity::Deferred(d) = b.prepare_hold("new", HoldReason::NoApproval) else {
+        panic!()
+    };
+    assert_eq!(d.ack, AckResult::DeferredCapacity);
+    assert_eq!(d.transition, Transition::Unchanged);
+    assert!(!d.ack.is_final());
+    assert_eq!(b.used(), 16);
+    assert_eq!(b.kind("new"), None);
+    assert_eq!(b.kind("p0"), Some(SlotKind::Proposal));
+    assert!(matches!(
+        b.prepare_hold("held", HoldReason::NoApproval),
+        OverwriteCapacity::Held(_)
+    ));
+}
+
+#[test]
+fn checkpoint_failure_reuses_existing_hold_at_capacity() {
+    let mut b = SlotBudget::new(0);
+    for n in 0..15 {
+        b.reserve_snapshot(&format!("s{n}"));
+    }
+    b.reserve("held", SlotKind::Held);
+    let OverwriteCapacity::Held(d) = b.prepare_overwrite("s0", "held") else {
+        panic!()
+    };
+    held(&d, HoldReason::OverLimit);
+    assert!(matches!(
+        b.prepare_overwrite("s0", "new"),
+        OverwriteCapacity::Deferred(_)
+    ));
+    assert_eq!(b.used(), 16);
+}
+
+#[test]
+fn removing_one_scope_peer_preserves_generation_and_other_peers() {
+    let mut g = Generations::default();
+    g.rm("key").unwrap();
+    g.accept("key", peer("a"));
+    g.accept("key", peer("b"));
+    g.accept("other", peer("a"));
+    let (leave, target) = g.remove_peer("key", &peer("a")).unwrap();
+    assert_eq!(target, peer("a"));
+    assert_eq!(
+        leave,
+        Registration {
+            name: "key".into(),
+            generation: 1
+        }
+    );
+    assert_eq!(g.generation("key"), 1);
+    assert!(!g.includes("key", &peer("a")));
+    assert!(g.includes("key", &peer("b")));
+    assert!(g.includes("other", &peer("a")));
+    assert_eq!(g.remove_peer("key", &peer("a")), None);
+    assert_eq!(g.remove_peer("missing", &peer("a")), None);
+    assert_eq!(g.accept("key", peer("a")).generation, 1);
 }
