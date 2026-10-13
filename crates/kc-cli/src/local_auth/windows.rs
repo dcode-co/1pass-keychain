@@ -31,9 +31,8 @@ fn request_verification(reason: &str) -> windows::core::Result<UserConsentVerifi
     };
     // SAFETY: The OS-provided window handle and owned HSTRING remain valid
     // for the call; the requested interface is the documented result type.
-    let request: IAsyncOperation<UserConsentVerificationResult> = unsafe {
-        verifier.RequestVerificationForWindowAsync(hwnd, &HSTRING::from(reason))?
-    };
+    let request: IAsyncOperation<UserConsentVerificationResult> =
+        unsafe { verifier.RequestVerificationForWindowAsync(hwnd, &HSTRING::from(reason))? };
     request.get()
 }
 

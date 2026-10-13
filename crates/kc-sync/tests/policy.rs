@@ -352,14 +352,28 @@ fn retire_requires_approval_and_never_requests_value_deletion() {
         for parents in [vec![], vec![v(99)], vec![v(1), v(3), v(4)]] {
             i.parents = parents;
             held(
-                &decide(&s, f(1), &i, false, Some(&VerifiedApproval::for_tests()), true),
+                &decide(
+                    &s,
+                    f(1),
+                    &i,
+                    false,
+                    Some(&VerifiedApproval::for_tests()),
+                    true,
+                ),
                 HoldReason::RetireMismatch,
             );
         }
     }
     i.parents = vec![v(1)];
     held(
-        &decide(&conflicted(), f(1), &i, false, Some(&VerifiedApproval::for_tests()), true),
+        &decide(
+            &conflicted(),
+            f(1),
+            &i,
+            false,
+            Some(&VerifiedApproval::for_tests()),
+            true,
+        ),
         HoldReason::Resolve,
     );
 }
@@ -916,7 +930,6 @@ fn slot_budget_round_trip_retains_snapshot_pins() {
     );
 }
 
-
 #[test]
 fn convergence_cannot_inject_another_peers_future_vid() {
     let mut a = state();
@@ -962,8 +975,21 @@ fn approved_resolve_records_all_parents_and_late_candidates_are_stale() {
     let mut i = incoming();
     i.parents = vec![v(1), v(3), v(4), v(99)];
     i.lineage = Lineage::new([v(77)]);
-    let d = decide(&s, f(1), &i, false, Some(&VerifiedApproval::for_tests()), true);
-    let Transition::Advance { head, lineage, clear_conflict: true, .. } = d.transition else {
+    let d = decide(
+        &s,
+        f(1),
+        &i,
+        false,
+        Some(&VerifiedApproval::for_tests()),
+        true,
+    );
+    let Transition::Advance {
+        head,
+        lineage,
+        clear_conflict: true,
+        ..
+    } = d.transition
+    else {
         panic!()
     };
     assert!(lineage.contains(&v(77)));
@@ -990,8 +1016,17 @@ fn approved_resolve_records_all_parents_and_late_candidates_are_stale() {
 fn approved_fast_forward_merges_sender_lineage() {
     let mut i = incoming();
     i.lineage = Lineage::new([v(99)]);
-    let d = decide(&state(), f(1), &i, false, Some(&VerifiedApproval::for_tests()), true);
-    let Transition::Advance { lineage, .. } = d.transition else { panic!() };
+    let d = decide(
+        &state(),
+        f(1),
+        &i,
+        false,
+        Some(&VerifiedApproval::for_tests()),
+        true,
+    );
+    let Transition::Advance { lineage, .. } = d.transition else {
+        panic!()
+    };
     assert!(lineage.contains(&v(99)));
 }
 
@@ -1007,15 +1042,31 @@ fn slot_budget_shrink_preserves_slots_and_refuses_new_reservations() {
     for n in 0..20 {
         assert_eq!(b.kind(&format!("p{n}")), Some(SlotKind::Proposal));
     }
-    for kind in [SlotKind::Proposal, SlotKind::Held, SlotKind::ConflictCandidate, SlotKind::Checkpoint] {
+    for kind in [
+        SlotKind::Proposal,
+        SlotKind::Held,
+        SlotKind::ConflictCandidate,
+        SlotKind::Checkpoint,
+    ] {
         assert_eq!(b.reserve("new", kind), Reservation::Refused);
     }
-    assert_eq!(b.reserve("p0", SlotKind::Proposal), Reservation::Reserved { evicted: None });
-    for n in 0..5 { assert!(b.release(&format!("p{n}"))); }
-    assert_eq!(b.reserve("held", SlotKind::Held), Reservation::Reserved { evicted: None });
+    assert_eq!(
+        b.reserve("p0", SlotKind::Proposal),
+        Reservation::Reserved { evicted: None }
+    );
+    for n in 0..5 {
+        assert!(b.release(&format!("p{n}")));
+    }
+    assert_eq!(
+        b.reserve("held", SlotKind::Held),
+        Reservation::Reserved { evicted: None }
+    );
     b.set_items(6);
     assert_eq!(b.capacity(), 24);
-    assert_eq!(b.reserve("new", SlotKind::Proposal), Reservation::Reserved { evicted: None });
+    assert_eq!(
+        b.reserve("new", SlotKind::Proposal),
+        Reservation::Reserved { evicted: None }
+    );
     b.set_items(usize::MAX);
     assert_eq!(b.capacity(), usize::MAX);
 }
@@ -1023,27 +1074,43 @@ fn slot_budget_shrink_preserves_slots_and_refuses_new_reservations() {
 #[test]
 fn prepare_hold_reserves_or_defers_without_eviction() {
     let mut b = SlotBudget::new(0);
-    let OverwriteCapacity::Held(d) = b.prepare_hold("held", HoldReason::Frozen) else { panic!() };
+    let OverwriteCapacity::Held(d) = b.prepare_hold("held", HoldReason::Frozen) else {
+        panic!()
+    };
     held(&d, HoldReason::Frozen);
-    for n in 0..15 { b.reserve(&format!("p{n}"), SlotKind::Proposal); }
-    let OverwriteCapacity::Deferred(d) = b.prepare_hold("new", HoldReason::NoApproval) else { panic!() };
+    for n in 0..15 {
+        b.reserve(&format!("p{n}"), SlotKind::Proposal);
+    }
+    let OverwriteCapacity::Deferred(d) = b.prepare_hold("new", HoldReason::NoApproval) else {
+        panic!()
+    };
     assert_eq!(d.ack, AckResult::DeferredCapacity);
     assert_eq!(d.transition, Transition::Unchanged);
     assert!(!d.ack.is_final());
     assert_eq!(b.used(), 16);
     assert_eq!(b.kind("new"), None);
     assert_eq!(b.kind("p0"), Some(SlotKind::Proposal));
-    assert!(matches!(b.prepare_hold("held", HoldReason::NoApproval), OverwriteCapacity::Held(_)));
+    assert!(matches!(
+        b.prepare_hold("held", HoldReason::NoApproval),
+        OverwriteCapacity::Held(_)
+    ));
 }
 
 #[test]
 fn checkpoint_failure_reuses_existing_hold_at_capacity() {
     let mut b = SlotBudget::new(0);
-    for n in 0..15 { b.reserve_snapshot(&format!("s{n}")); }
+    for n in 0..15 {
+        b.reserve_snapshot(&format!("s{n}"));
+    }
     b.reserve("held", SlotKind::Held);
-    let OverwriteCapacity::Held(d) = b.prepare_overwrite("s0", "held") else { panic!() };
+    let OverwriteCapacity::Held(d) = b.prepare_overwrite("s0", "held") else {
+        panic!()
+    };
     held(&d, HoldReason::OverLimit);
-    assert!(matches!(b.prepare_overwrite("s0", "new"), OverwriteCapacity::Deferred(_)));
+    assert!(matches!(
+        b.prepare_overwrite("s0", "new"),
+        OverwriteCapacity::Deferred(_)
+    ));
     assert_eq!(b.used(), 16);
 }
 
@@ -1056,7 +1123,13 @@ fn removing_one_scope_peer_preserves_generation_and_other_peers() {
     g.accept("other", peer("a"));
     let (leave, target) = g.remove_peer("key", &peer("a")).unwrap();
     assert_eq!(target, peer("a"));
-    assert_eq!(leave, Registration { name: "key".into(), generation: 1 });
+    assert_eq!(
+        leave,
+        Registration {
+            name: "key".into(),
+            generation: 1
+        }
+    );
     assert_eq!(g.generation("key"), 1);
     assert!(!g.includes("key", &peer("a")));
     assert!(g.includes("key", &peer("b")));

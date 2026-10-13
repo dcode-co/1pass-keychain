@@ -597,27 +597,48 @@ fn change_parents_limit_on_decode_validate_seal_and_open() {
 
 #[test]
 fn duplicate_digest_names_are_malformed() {
-    let entry = DigestEntry { name: name("token"), generation: 1, head: Vid([1; 16]) };
+    let entry = DigestEntry {
+        name: name("token"),
+        generation: 1,
+        head: Vid([1; 16]),
+    };
     for same_metadata in [true, false] {
         let mut other = entry.clone();
         if !same_metadata {
             other.generation += 1;
             other.head = Vid([2; 16]);
         }
-        assert_sync_validation(SyncMsg::Digest { entries: vec![entry.clone(), other] }, false);
+        assert_sync_validation(
+            SyncMsg::Digest {
+                entries: vec![entry.clone(), other],
+            },
+            false,
+        );
     }
     let mut other = entry.clone();
     other.name = name("other");
-    assert_sync_validation(SyncMsg::Digest { entries: vec![entry, other] }, true);
+    assert_sync_validation(
+        SyncMsg::Digest {
+            entries: vec![entry, other],
+        },
+        true,
+    );
 }
 
 #[test]
 fn duplicate_ack_change_ids_are_malformed() {
-    let id = ChangeId { name: name("token"), generation: 1, new_vid: Vid([1; 16]) };
+    let id = ChangeId {
+        name: name("token"),
+        generation: 1,
+        new_vid: Vid([1; 16]),
+    };
     for result in [AckResult::Applied, AckResult::Rejected] {
-        assert_sync_validation(SyncMsg::Ack {
-            results: vec![(id.clone(), AckResult::Applied), (id.clone(), result)],
-        }, false);
+        assert_sync_validation(
+            SyncMsg::Ack {
+                results: vec![(id.clone(), AckResult::Applied), (id.clone(), result)],
+            },
+            false,
+        );
     }
     for field in 0..3 {
         let mut other = id.clone();
@@ -626,8 +647,11 @@ fn duplicate_ack_change_ids_are_malformed() {
             1 => other.generation += 1,
             _ => other.new_vid = Vid([2; 16]),
         }
-        assert_sync_validation(SyncMsg::Ack {
-            results: vec![(id.clone(), AckResult::Applied), (other, AckResult::Held)],
-        }, true);
+        assert_sync_validation(
+            SyncMsg::Ack {
+                results: vec![(id.clone(), AckResult::Applied), (other, AckResult::Held)],
+            },
+            true,
+        );
     }
 }
