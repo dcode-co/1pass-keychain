@@ -59,8 +59,8 @@ $ npx 1pass-keychain doctor            # 或者：bunx 1pass-keychain doctor（�
 | Windows x86_64 | `kc-<version>-x86_64-pc-windows-msvc.zip` |
 
 ```console
-$ tar -xzf kc-v0.1.0-aarch64-apple-darwin.tar.gz
-$ install -m 755 kc-v0.1.0-aarch64-apple-darwin/kc ~/.local/bin/kc
+$ tar -xzf kc-v0.2.0-aarch64-apple-darwin.tar.gz
+$ install -m 755 kc-v0.2.0-aarch64-apple-darwin/kc ~/.local/bin/kc
 $ kc doctor
 ```
 
@@ -158,7 +158,7 @@ $ KC_LANG=ko kc doctor
 
 ## 狀態
 
-早期版本（v0.1）。已在實體電腦上測試：
+早期版本（v0.2）。已在實體電腦上測試：
 
 - macOS 與 Linux 之間、macOS 與 Windows 11 之間的雙向配對傳送
 - 從 macOS 到 Linux 的一次性代碼傳送
