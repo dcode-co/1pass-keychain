@@ -61,7 +61,10 @@ Things that have bitten us:
 
 ## CI
 
-`backend::tests::a_timed_out_call_that_panics_is_still_settled` (kc-store)
-depends on timing and has failed once on a slow macOS runner. Rerun the failed
-job (`gh run rerun <id> --failed`) before suspecting the change. Don't merge
-while a check is red, even a known flaky one; rerun it first.
+A red check blocks the merge, even when the change can't have caused it.
+Rerun the failed job (`gh run rerun <id> --failed`) to tell a flaky test from a
+real failure, and fix a test that fails by chance instead of rerunning it
+forever. `backend::tests::a_timed_out_call_that_panics_is_still_settled`
+(kc-store) was such a test: its worker slept 100 ms against a 20 ms timeout,
+and a busy macOS runner let the panic win. Its worker now panics only after the
+caller has timed out and signals it, so the order is fixed (PR #8).
