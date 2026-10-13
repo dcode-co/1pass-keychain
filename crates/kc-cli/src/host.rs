@@ -16,6 +16,7 @@ use kc_wire::Limits;
 use crate::console::{Console, TermConsole};
 use crate::error::{CliError, Result};
 use crate::http::HttpRelay;
+use crate::i18n::tr;
 use crate::settings::RelayUrl;
 
 pub trait Host {
@@ -37,6 +38,10 @@ pub trait Host {
     fn relay_limits(&self, relay: &RelayUrl) -> impl Future<Output = Result<Limits, RelayError>>;
     /// The default device label.
     fn hostname(&self) -> String;
+    /// The OS's preferred language (`ko-KR`), for messages when no locale variable is set.
+    fn system_locale(&self) -> Option<String> {
+        None
+    }
     /// Runs `kc exec`'s command and returns its exit code. The real host replaces the kc
     /// process with it on Unix (so this only returns on failure).
     fn run_command(&mut self, command: Command) -> Result<i32>;
@@ -112,6 +117,10 @@ impl Host for RealHost {
         client.limits().await
     }
 
+    fn system_locale(&self) -> Option<String> {
+        sys_locale::get_locale()
+    }
+
     fn hostname(&self) -> String {
         gethostname::gethostname().to_string_lossy().into_owned()
     }
@@ -162,5 +171,12 @@ fn start_error(program: &str, error: &std::io::Error) -> CliError {
     } else {
         126
     };
-    CliError::new(code, format!("can't run {program:?}: {error}"))
+    CliError::new(
+        code,
+        tr!(
+            "can't run {program}: {e}",
+            program = format!("{program:?}"),
+            e = error
+        ),
+    )
 }

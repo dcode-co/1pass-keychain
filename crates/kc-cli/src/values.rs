@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::error::{CliError, Result};
+use crate::i18n::tr;
 
 /// Reads everything from `reader` into a wiped buffer. Growing copies into a new wiped
 /// buffer, so no reallocation leaves the secret behind. Fails past `limit` bytes.
@@ -25,7 +26,10 @@ pub(crate) fn read_secret(reader: &mut dyn Read, limit: usize) -> io::Result<Zer
         if out.len() + n > limit {
             break Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("the value is larger than the limit of {limit} bytes"),
+                tr!(
+                    "the value is larger than the limit of {limit} bytes",
+                    limit = limit
+                ),
             ));
         }
         if out.len() + n > out.capacity() {
@@ -54,7 +58,7 @@ pub(crate) fn read_line_secret(
             Ok(_) if line.len() >= limit => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    "the line is too long",
+                    tr!("the line is too long"),
                 ));
             }
             Ok(_) => line.push(byte[0]),
@@ -67,7 +71,7 @@ pub(crate) fn read_line_secret(
         Ok(text) => Ok(Zeroizing::new(text.trim().to_owned())),
         Err(_) => Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "the line is not UTF-8",
+            tr!("the line is not UTF-8"),
         )),
     }
 }
@@ -86,19 +90,22 @@ pub(crate) fn strip_line_ending(value: &mut Zeroizing<Vec<u8>>) {
 pub(crate) fn read_file(path: &Path, limit: usize) -> Result<Zeroizing<Vec<u8>>> {
     let shown = path.display();
     let mut file = std::fs::File::open(path)
-        .map_err(|e| CliError::usage(format!("can't open {shown}: {e}")))?;
+        .map_err(|e| CliError::usage(tr!("can't open {path}: {e}", path = shown, e = e)))?;
     if let Ok(meta) = file.metadata() {
         if meta.is_dir() {
-            return Err(CliError::usage(format!("{shown} is a directory")));
+            return Err(CliError::usage(tr!("{path} is a directory", path = shown)));
         }
         if meta.len() > limit as u64 {
-            return Err(CliError::usage(format!(
-                "{shown} is {} bytes; the limit is {limit}",
-                meta.len()
+            return Err(CliError::usage(tr!(
+                "{path} is {size} bytes; the limit is {limit}",
+                path = shown,
+                size = meta.len(),
+                limit = limit
             )));
         }
     }
-    read_secret(&mut file, limit).map_err(|e| CliError::usage(format!("can't read {shown}: {e}")))
+    read_secret(&mut file, limit)
+        .map_err(|e| CliError::usage(tr!("can't read {path}: {e}", path = shown, e = e)))
 }
 
 /// `xxxx-xxxx-xxxx-xxxx`: the first 8 bytes of `SHA-256("kc1 value fingerprint" || value)`.
@@ -118,14 +125,15 @@ pub(crate) fn value_fingerprint(value: &[u8]) -> String {
     )
 }
 
-const NAME_RULE: &str = "item names are 1-128 characters of A-Z a-z 0-9 . _ / -, start with a \
-                         letter or digit, and have no \"..\" and no trailing \"/\"";
-
 /// Checks an item name typed on the command line. An invalid one isn't repeated in the
 /// error: it might be a value pasted in the wrong place.
 pub(crate) fn item_name(input: &str) -> Result<ItemName> {
-    ItemName::new(input)
-        .map_err(|_| CliError::usage(format!("invalid item name (not shown): {NAME_RULE}")))
+    ItemName::new(input).map_err(|_| {
+        CliError::usage(tr!(
+            "invalid item name (not shown): item names are 1-128 characters of A-Z a-z 0-9 . _ \
+             / -, start with a letter or digit, and have no \"..\" and no trailing \"/\""
+        ))
+    })
 }
 
 /// `[A-Za-z_][A-Za-z0-9_]*`, at most 255 characters.

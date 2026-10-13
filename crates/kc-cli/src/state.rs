@@ -16,6 +16,7 @@ use kc_proto::{DevicePublicKey, Fingerprint, ItemResult, Label};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{CliError, Result};
+use crate::i18n::tr;
 
 pub const PEERS_FILE: &str = "peers.json";
 pub const SEEN_FILE: &str = "seen.json";
@@ -125,13 +126,13 @@ impl Peers {
         let mut labels = Vec::new();
         for p in &self.peers {
             if p.device_pk.fingerprint() != p.fingerprint {
-                return Err(format!(
-                    "{}: the fingerprint doesn't match the key",
-                    p.label
+                return Err(tr!(
+                    "{label}: the fingerprint doesn't match the key",
+                    label = p.label
                 ));
             }
             if p.writer_id.as_deref().is_some_and(|w| !is_url_token(w)) {
-                return Err(format!("{}: invalid writer id", p.label));
+                return Err(tr!("{label}: invalid writer id", label = p.label));
             }
             let valid_key = |k: &str| {
                 k.strip_prefix(WRITER_KEY_PREFIX).is_some_and(|rest| {
@@ -139,11 +140,11 @@ impl Peers {
                 })
             };
             if p.token_key.as_deref().is_some_and(|k| !valid_key(k)) {
-                return Err(format!("{}: invalid token slot", p.label));
+                return Err(tr!("{label}: invalid token slot", label = p.label));
             }
             let lower = p.label.as_str().to_ascii_lowercase();
             if labels.contains(&lower) {
-                return Err(format!("the label {} appears twice", p.label));
+                return Err(tr!("the label {label} appears twice", label = p.label));
             }
             labels.push(lower);
         }
@@ -153,7 +154,7 @@ impl Peers {
                 && w.token_sha256.as_deref().is_none_or(is_url_token)
         };
         if !self.pending_writers.iter().all(valid) {
-            return Err("invalid pending writer entry".into());
+            return Err(tr!("invalid pending writer entry"));
         }
         Ok(())
     }
@@ -240,7 +241,9 @@ impl StateDir {
     /// waiting up to 15 s for another kc process. Don't take it twice in one process: a
     /// second handle blocks too.
     pub fn lock(&self) -> Result<StateLock> {
-        self.lock_file(LOCK_FILE, "changing this device's pairing state")
+        self.lock_file(LOCK_FILE, || {
+            tr!("another kc process is changing this device's pairing state; try again")
+        })
     }
 
     /// `state.lock` if it is free right now. For housekeeping that can wait.
@@ -270,9 +273,10 @@ impl StateDir {
     /// both are needed, never the other way round.
     pub fn lock_items(&self, namespace: &str) -> Result<StateLock> {
         let file = format!("{ITEMS_LOCK_PREFIX}{namespace}.lock");
+        let busy = || tr!("another kc process is writing items; try again");
         match user_lock_dir() {
-            Some(dir) => StateDir::new(dir).lock_file(&file, "writing items"),
-            None => self.lock_file(&file, "writing items"),
+            Some(dir) => StateDir::new(dir).lock_file(&file, busy),
+            None => self.lock_file(&file, busy),
         }
     }
 
@@ -295,12 +299,12 @@ impl StateDir {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        options
-            .open(&path)
-            .map_err(|e| CliError::failure(format!("can't open {}: {e}", path.display())))
+        options.open(&path).map_err(|e| {
+            CliError::failure(tr!("can't open {path}: {e}", path = path.display(), e = e))
+        })
     }
 
-    fn lock_file(&self, name: &str, busy: &str) -> Result<StateLock> {
+    fn lock_file(&self, name: &str, busy: impl Fn() -> String) -> Result<StateLock> {
         let mut lock = fd_lock::RwLock::new(self.open_lock(name)?);
         let start = Instant::now();
         loop {
@@ -311,14 +315,13 @@ impl StateDir {
                     std::thread::sleep(LOCK_POLL);
                 }
                 Err(e) if is_contended(&e) => {
-                    return Err(CliError::failure(format!(
-                        "another kc process is {busy}; try again"
-                    )));
+                    return Err(CliError::failure(busy()));
                 }
                 Err(e) => {
-                    return Err(CliError::failure(format!(
-                        "can't lock {}: {e}",
-                        self.root.join(name).display()
+                    return Err(CliError::failure(tr!(
+                        "can't lock {path}: {e}",
+                        path = self.root.join(name).display(),
+                        e = e
                     )));
                 }
             }
@@ -329,8 +332,12 @@ impl StateDir {
         let path = self.root.join(PEERS_FILE);
         let peers: Peers = load_json(&path)?.unwrap_or_default();
         peers.validate().map_err(|why| {
-            CliError::failure(format!("{} is damaged: {why}", path.display()))
-                .with_hint("fix or delete the entry, then pair that device again")
+            CliError::failure(tr!(
+                "{path} is damaged: {why}",
+                path = path.display(),
+                why = why
+            ))
+            .with_hint(tr!("fix or delete the entry, then pair that device again"))
         })?;
         Ok(peers)
     }
@@ -382,23 +389,34 @@ fn load_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<Option<T>> {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => {
-            return Err(CliError::failure(format!(
-                "can't read {}: {e}",
-                path.display()
+            return Err(CliError::failure(tr!(
+                "can't read {path}: {e}",
+                path = path.display(),
+                e = e
             )));
         }
     };
-    serde_json::from_slice(&bytes)
-        .map(Some)
-        .map_err(|e| CliError::failure(format!("{} is damaged: {e}", path.display())))
+    serde_json::from_slice(&bytes).map(Some).map_err(|e| {
+        CliError::failure(tr!(
+            "{path} is damaged: {why}",
+            path = path.display(),
+            why = e
+        ))
+    })
 }
 
 fn save_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
-    let mut bytes = serde_json::to_vec_pretty(value)
-        .map_err(|e| CliError::failure(format!("can't encode {}: {e}", path.display())))?;
+    let mut bytes = serde_json::to_vec_pretty(value).map_err(|e| {
+        CliError::failure(tr!(
+            "can't encode {path}: {e}",
+            path = path.display(),
+            e = e
+        ))
+    })?;
     bytes.push(b'\n');
-    write_private_atomic(path, &bytes)
-        .map_err(|e| CliError::failure(format!("can't write {}: {e}", path.display())))
+    write_private_atomic(path, &bytes).map_err(|e| {
+        CliError::failure(tr!("can't write {path}: {e}", path = path.display(), e = e))
+    })
 }
 
 /// `[A-Za-z0-9_-]{1,64}`: what base64url ids look like, so they're safe in a URL path.
@@ -417,9 +435,9 @@ pub(crate) fn create_private_dir(dir: &Path) -> Result<()> {
         use std::os::unix::fs::DirBuilderExt;
         builder.mode(0o700);
     }
-    builder
-        .create(dir)
-        .map_err(|e| CliError::failure(format!("can't create {}: {e}", dir.display())))
+    builder.create(dir).map_err(|e| {
+        CliError::failure(tr!("can't create {path}: {e}", path = dir.display(), e = e))
+    })
 }
 
 /// Writes `bytes` to `path` atomically: a new file readable only by the user (mode 600 on
@@ -456,9 +474,9 @@ fn restrict_to_owner(file: &Path) -> io::Result<()> {
     if status.success() {
         Ok(())
     } else {
-        Err(io::Error::other(
-            "couldn't restrict the file to its owner (icacls failed)",
-        ))
+        Err(io::Error::other(tr!(
+            "couldn't restrict the file to its owner (icacls failed)"
+        )))
     }
 }
 
@@ -486,7 +504,7 @@ fn write_atomic(
     };
     let name = path
         .file_name()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "not a file path"))?;
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, tr!("not a file path")))?;
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.subsec_nanos());

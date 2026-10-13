@@ -23,6 +23,7 @@ pub mod error;
 pub mod harden;
 pub mod host;
 pub mod http;
+pub mod i18n;
 pub mod interrupt;
 mod keychain;
 pub mod policy;

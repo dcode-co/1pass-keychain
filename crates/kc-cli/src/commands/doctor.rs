@@ -7,32 +7,48 @@ use crate::keychain::Keychain;
 use kc_wire::{PROTO_VERSION, exit};
 
 use super::pairing::{DEVICE_KEY, read_inbox};
+use super::{display_width, pad_to};
 use crate::cli::{Cli, DoctorArgs};
 use crate::console::Console as _;
 use crate::error::Result;
 use crate::host::Host;
+use crate::i18n::tr;
 use crate::policy::Interactivity;
 use crate::settings::{self, ENV_RELAY, Settings};
 use crate::state::StateDir;
 
+/// Rows of what was checked and how it went. The labels are translated, so the column is
+/// as wide as the widest label in terminal columns plus two, at least 18.
 #[derive(Default)]
 struct Report {
-    text: String,
+    rows: Vec<(String, String)>,
     code: Option<i32>,
 }
 
 impl Report {
-    fn line(&mut self, what: &str, detail: impl Display) {
-        self.text.push_str(&format!("{what:<18} {detail}\n"));
+    fn line(&mut self, what: impl Into<String>, detail: impl Display) {
+        self.rows.push((what.into(), detail.to_string()));
     }
 
-    fn fail(&mut self, what: &str, detail: impl Display, code: i32) {
-        self.line(what, format!("FAIL: {detail}"));
+    fn fail(&mut self, what: impl Into<String>, detail: impl Display, code: i32) {
+        self.line(what, tr!("FAIL: {detail}", detail = detail));
         self.code.get_or_insert(code);
     }
 
-    fn warn(&mut self, what: &str, detail: impl Display) {
-        self.line(what, format!("warning: {detail}"));
+    fn warn(&mut self, what: impl Into<String>, detail: impl Display) {
+        self.line(what, tr!("warning: {detail}", detail = detail));
+    }
+
+    fn text(&self) -> String {
+        let width = self
+            .rows
+            .iter()
+            .map(|(what, _)| display_width(what) + 2)
+            .fold(18, usize::max);
+        self.rows
+            .iter()
+            .map(|(what, detail)| format!("{} {detail}\n", pad_to(what, width)))
+            .collect()
     }
 }
 
@@ -46,17 +62,17 @@ pub(super) async fn doctor<H: Host>(
 ) -> Result<i32> {
     let mut r = Report::default();
     r.line("kc", env!("CARGO_PKG_VERSION"));
-    r.line("config dir", state.root().display());
+    r.line(tr!("config dir"), state.root().display());
 
     let settings = match settings {
         Ok(settings) => {
             let unknown = Settings::unknown_keys(state.root());
             if unknown.is_empty() {
-                r.line("config.toml", "ok");
+                r.line("config.toml", tr!("ok"));
             } else {
                 r.warn(
                     "config.toml",
-                    format!("unknown keys: {}", unknown.join(", ")),
+                    tr!("unknown keys: {keys}", keys = unknown.join(", ")),
                 );
             }
             settings
@@ -70,14 +86,14 @@ pub(super) async fn doctor<H: Host>(
         && kc_proto::Label::new(label).is_err()
     {
         r.warn(
-            "label",
-            "not 1-64 printable ASCII characters; kc uses a cleaned-up copy",
+            tr!("label"),
+            tr!("not 1-64 printable ASCII characters; kc uses a cleaned-up copy"),
         );
     }
 
     let peers = match state.load_peers() {
         Ok(peers) => {
-            r.line("paired devices", peers.peers.len());
+            r.line(tr!("paired devices"), peers.peers.len());
             Some(peers)
         }
         Err(e) => {
@@ -90,7 +106,7 @@ pub(super) async fn doctor<H: Host>(
     }
 
     match host.open_store(interactivity.is_interactive()) {
-        Err(e) => r.fail("keychain", &e.message, e.code),
+        Err(e) => r.fail(tr!("keychain"), &e.message, e.code),
         Ok(store) => check_store(
             &mut r,
             &Keychain::new(store),
@@ -107,49 +123,61 @@ pub(super) async fn doctor<H: Host>(
         &settings,
         cli.allow_http,
     ) {
-        Err(e) => r.fail("relay", &e.message, e.code),
+        Err(e) => r.fail(tr!("relay"), &e.message, e.code),
         Ok(url) => {
             if url.is_plain_http() {
-                r.warn("relay", format!("{url} is plain http (TLS off)"));
+                r.warn(
+                    tr!("relay"),
+                    tr!("{url} is plain http (TLS off)", url = url),
+                );
             }
             match host.relay_limits(&url).await {
                 Ok(limits) if limits.proto_version == PROTO_VERSION => {
                     r.line(
-                        "relay",
-                        format!("ok: {url} (protocol {})", limits.proto_version),
+                        tr!("relay"),
+                        tr!(
+                            "ok: {url} (protocol {version})",
+                            url = url,
+                            version = limits.proto_version
+                        ),
                     );
                 }
                 Ok(limits) => r.fail(
-                    "relay",
-                    format!(
-                        "{url} speaks protocol {}, this kc speaks {PROTO_VERSION}",
-                        limits.proto_version
+                    tr!("relay"),
+                    tr!(
+                        "{url} speaks protocol {theirs}, this kc speaks {ours}",
+                        url = url,
+                        theirs = limits.proto_version,
+                        ours = PROTO_VERSION
                     ),
                     exit::RELAY_UNAVAILABLE,
                 ),
-                Err(e) => r.fail("relay", format!("{url}: {e}"), exit::RELAY_UNAVAILABLE),
+                Err(e) => r.fail(tr!("relay"), format!("{url}: {e}"), exit::RELAY_UNAVAILABLE),
             }
         }
     }
 
     if interactivity.is_interactive() {
-        r.line("session", "interactive");
+        r.line(tr!("session"), tr!("interactive"));
     } else {
         r.line(
-            "session",
-            format!("non-interactive ({})", interactivity.reasons().join(", ")),
+            tr!("session"),
+            tr!(
+                "non-interactive ({reasons})",
+                reasons = interactivity.reasons().join(", ")
+            ),
         );
     }
     r.line(
-        "agent code sends",
+        tr!("agent code sends"),
         if settings.agent_code_send {
-            "allowed (agent_code_send = true)"
+            tr!("allowed (agent_code_send = true)")
         } else {
-            "refused"
+            tr!("refused")
         },
     );
 
-    let _ = host.console().stdout().write_all(r.text.as_bytes());
+    let _ = host.console().stdout().write_all(r.text().as_bytes());
     let _ = host.console().stdout().flush();
     Ok(r.code.unwrap_or(exit::OK))
 }
@@ -163,69 +191,92 @@ fn check_store(
 ) {
     match store.backend_description() {
         Ok(desc) => r.line(
-            "keychain",
-            format!("ok: {desc}, namespace {}", store.namespace()),
+            tr!("keychain"),
+            tr!(
+                "ok: {backend}, namespace {namespace}",
+                backend = desc,
+                namespace = store.namespace()
+            ),
         ),
         Err(e) => {
-            r.fail("keychain", e.to_string(), e.exit_code());
+            r.fail(tr!("keychain"), e.to_string(), e.exit_code());
             return;
         }
     }
     if args.reindex {
         match store.reindex() {
-            Ok(report) => r.line(
-                "reindex",
-                format!(
-                    "done: {} added, {} removed, {} leftover entries deleted{}",
+            Ok(report) => {
+                let (added, removed, leftover) = (
                     report.added.len(),
                     report.removed.len(),
                     report.orphans_removed,
+                );
+                r.line(
+                    tr!("reindex"),
                     if report.replaced_corrupt_index {
-                        "; the damaged index was moved to index.json.corrupt"
+                        tr!(
+                            "done: {added} added, {removed} removed, {leftover} leftover entries \
+                             deleted; the damaged index was moved to index.json.corrupt",
+                            added = added,
+                            removed = removed,
+                            leftover = leftover
+                        )
                     } else {
-                        ""
-                    }
-                ),
-            ),
-            Err(e) => r.fail("reindex", e.to_string(), e.exit_code()),
+                        tr!(
+                            "done: {added} added, {removed} removed, {leftover} leftover entries \
+                             deleted",
+                            added = added,
+                            removed = removed,
+                            leftover = leftover
+                        )
+                    },
+                );
+            }
+            Err(e) => r.fail(tr!("reindex"), e.to_string(), e.exit_code()),
         }
     }
     match (store.list(), store.verify()) {
         (Ok(items), Ok(drift)) if drift.is_clean() => {
             r.line(
-                "items",
-                format!("{}; the index matches the keychain", items.len()),
+                tr!("items"),
+                tr!("{n}; the index matches the keychain", n = items.len()),
             );
         }
         (Ok(items), Ok(drift)) => r.warn(
-            "items",
-            format!(
-                "{}; the index is out of date ({} stale, {} missing): run `kc doctor --reindex`",
-                items.len(),
-                drift.stale.len(),
-                drift.unindexed.len()
+            tr!("items"),
+            tr!(
+                "{n}; the index is out of date ({stale} stale, {missing} missing): run `kc \
+                 doctor --reindex`",
+                n = items.len(),
+                stale = drift.stale.len(),
+                missing = drift.unindexed.len()
             ),
         ),
-        (Err(e), _) | (_, Err(e)) => r.fail("items", e.to_string(), e.exit_code()),
+        (Err(e), _) | (_, Err(e)) => r.fail(tr!("items"), e.to_string(), e.exit_code()),
     }
     let has = |key: &str| store.get_internal(key).map(|v| v.is_some());
     match (has(DEVICE_KEY), read_inbox(store)) {
-        (Ok(false), Ok(None)) => r.line("device", "not paired yet (no device key or inbox)"),
-        (Ok(true), Ok(None)) => r.line("device", "device key ok, no inbox yet"),
+        (Ok(false), Ok(None)) => r.line(
+            tr!("device"),
+            tr!("not paired yet (no device key or inbox)"),
+        ),
+        (Ok(true), Ok(None)) => r.line(tr!("device"), tr!("device key ok, no inbox yet")),
         (Ok(true), Ok(Some((id, _)))) if settings.inbox_id.as_deref() == Some(id.as_str()) => {
-            r.line("device", "device key and inbox ok")
+            r.line(tr!("device"), tr!("device key and inbox ok"))
         }
         (Ok(true), Ok(Some(_))) => r.warn(
-            "device",
-            "config.toml's inbox_id doesn't match the keychain (the keychain is used; the next \
-             pairing rewrites config.toml)",
+            tr!("device"),
+            tr!(
+                "config.toml's inbox_id doesn't match the keychain (the keychain is used; the \
+                 next pairing rewrites config.toml)"
+            ),
         ),
         (Ok(false), Ok(Some(_))) => r.warn(
-            "device",
-            "an inbox but no device key; `kc device rotate` starts over",
+            tr!("device"),
+            tr!("an inbox but no device key; `kc device rotate` starts over"),
         ),
-        (Err(e), _) => r.fail("device", e.to_string(), e.exit_code()),
-        (_, Err(e)) => r.fail("device", &e.message, e.code),
+        (Err(e), _) => r.fail(tr!("device"), e.to_string(), e.exit_code()),
+        (_, Err(e)) => r.fail(tr!("device"), &e.message, e.code),
     }
     if let Some(peers) = peers {
         let missing: Vec<String> = peers
@@ -236,10 +287,10 @@ fn check_store(
             .collect();
         if !missing.is_empty() {
             r.warn(
-                "paired devices",
-                format!(
-                    "no sending token for {}; pair with them again",
-                    missing.join(", ")
+                tr!("paired devices"),
+                tr!(
+                    "no sending token for {devices}; pair with them again",
+                    devices = missing.join(", ")
                 ),
             );
         }

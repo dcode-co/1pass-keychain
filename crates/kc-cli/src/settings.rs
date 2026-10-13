@@ -23,6 +23,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{CliError, Result};
+use crate::i18n::tr;
 use crate::state::write_private_atomic;
 
 pub const CONFIG_FILE: &str = "config.toml";
@@ -71,28 +72,36 @@ impl Settings {
             Ok(text) => text,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Settings::default()),
             Err(e) => {
-                return Err(CliError::failure(format!(
-                    "can't read {}: {e}",
-                    path.display()
+                return Err(CliError::failure(tr!(
+                    "can't read {path}: {e}",
+                    path = path.display(),
+                    e = e
                 )));
             }
         };
         toml::from_str(&text).map_err(|e| {
-            CliError::failure(format!(
-                "{} is invalid{}: {}",
-                path.display(),
-                line_of(&text, e.span()),
-                e.message()
-            ))
+            let shown = path.display();
+            let why = e.message();
+            CliError::failure(match line_number(&text, e.span()) {
+                Some(line) => tr!(
+                    "{path} is invalid (line {line}): {why}",
+                    path = shown,
+                    line = line,
+                    why = why
+                ),
+                None => tr!("{path} is invalid: {why}", path = shown, why = why),
+            })
         })
     }
 
     pub fn save(&self, dir: &Path) -> Result<()> {
-        let body = toml::to_string(self)
-            .map_err(|e| CliError::failure(format!("can't encode {CONFIG_FILE}: {e}")))?;
+        let body = toml::to_string(self).map_err(|e| {
+            CliError::failure(tr!("can't encode {path}: {e}", path = CONFIG_FILE, e = e))
+        })?;
         let path = dir.join(CONFIG_FILE);
-        write_private_atomic(&path, format!("{HEADER}{body}").as_bytes())
-            .map_err(|e| CliError::failure(format!("can't write {}: {e}", path.display())))
+        write_private_atomic(&path, format!("{HEADER}{body}").as_bytes()).map_err(|e| {
+            CliError::failure(tr!("can't write {path}: {e}", path = path.display(), e = e))
+        })
     }
 
     /// Top-level keys in `config.toml` that kc doesn't know (typos, for `kc doctor`).
@@ -111,18 +120,14 @@ impl Settings {
     }
 }
 
-/// `" (line N)"` for a parse error span.
-pub(crate) fn line_of(text: &str, span: Option<std::ops::Range<usize>>) -> String {
-    match span {
-        Some(span) => {
-            let line = text
-                .get(..span.start)
-                .map_or(0, |before| before.matches('\n').count())
-                + 1;
-            format!(" (line {line})")
-        }
-        None => String::new(),
-    }
+/// The 1-based line a parse error span starts on.
+pub(crate) fn line_number(text: &str, span: Option<std::ops::Range<usize>>) -> Option<usize> {
+    let span = span?;
+    Some(
+        text.get(..span.start)
+            .map_or(0, |before| before.matches('\n').count())
+            + 1,
+    )
 }
 
 /// A checked relay base URL: `scheme://host[:port][/prefix]`, without a trailing slash.
@@ -137,23 +142,23 @@ impl RelayUrl {
     /// Errors never repeat the input: a rejected URL may carry a password or a token.
     pub fn parse(input: &str, allow_http: bool) -> Result<RelayUrl> {
         let bad = |why: &str| {
-            CliError::usage(format!("invalid relay URL: {why}"))
-                .with_hint(format!("for example {DEFAULT_RELAY}"))
+            CliError::usage(tr!("invalid relay URL: {why}", why = why))
+                .with_hint(tr!("for example {url}", url = DEFAULT_RELAY))
         };
         let url = reqwest::Url::parse(input.trim()).map_err(|e| bad(&e.to_string()))?;
         let plain_http = match url.scheme() {
             "https" => false,
             "http" => true,
-            _ => return Err(bad("use https://")),
+            _ => return Err(bad(&tr!("use https://"))),
         };
         if !url.username().is_empty() || url.password().is_some() {
-            return Err(bad("it must not contain a user name or password"));
+            return Err(bad(&tr!("it must not contain a user name or password")));
         }
         if url.query().is_some() || url.fragment().is_some() {
-            return Err(bad("it must not have a query or a fragment"));
+            return Err(bad(&tr!("it must not have a query or a fragment")));
         }
         let Some(host) = url.host_str() else {
-            return Err(bad("it has no host"));
+            return Err(bad(&tr!("it has no host")));
         };
         if plain_http && !allow_http && !is_this_machine(host) {
             // Scheme, host and port only: nothing else of the input is shown.
@@ -161,13 +166,14 @@ impl RelayUrl {
                 Some(port) => format!("http://{host}:{port}"),
                 None => format!("http://{host}"),
             };
-            return Err(CliError::usage(format!(
-                "refusing the plain-http relay {shown}: only https:// relays are used, except \
-                 on this machine"
+            return Err(CliError::usage(tr!(
+                "refusing the plain-http relay {url}: only https:// relays are used, except \
+                 on this machine",
+                url = shown
             ))
-            .with_hint(
-                "pass --allow-http or set allow_http = true in config.toml for a test relay",
-            ));
+            .with_hint(tr!(
+                "pass --allow-http or set allow_http = true in config.toml for a test relay"
+            )));
         }
         let base = url.as_str().trim_end_matches('/').to_owned();
         Ok(RelayUrl { base, plain_http })
@@ -218,7 +224,7 @@ pub fn resolve_relay(
     if let Some(url) = env.filter(|v| !v.is_empty()) {
         let url = url
             .to_str()
-            .ok_or_else(|| CliError::usage(format!("{ENV_RELAY} is not valid UTF-8")))?;
+            .ok_or_else(|| CliError::usage(tr!("{var} is not valid UTF-8", var = ENV_RELAY)))?;
         return RelayUrl::parse(url, allow_http).map_err(|e| e.context(ENV_RELAY));
     }
     if let Some(url) = settings.relay.as_deref() {

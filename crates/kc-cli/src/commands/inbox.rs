@@ -21,17 +21,19 @@ use kc_wire::{ErrorCode, exit};
 use tokio::time::Instant;
 
 use super::apply::{self, Conflicts};
-use super::{Ctx, pairing, plural, say};
+use super::{Ctx, pairing, say};
 use crate::cli::InboxArgs;
 use crate::error::{CliError, Result};
 use crate::host::Host;
+use crate::i18n::tr;
 use crate::state::{Seen, StateDir};
 
 pub(super) async fn inbox<H: Host>(ctx: &mut Ctx<'_, H>, args: InboxArgs) -> Result<i32> {
     let Some((inbox_id, owner)) = pairing::owned_inbox(ctx)? else {
         say!(
             ctx,
-            "No inbox: this device hasn't been paired yet. Pair it with `kc pair`."
+            "{}",
+            tr!("No inbox: this device hasn't been paired yet. Pair it with `kc pair`.")
         );
         return Ok(exit::OK);
     };
@@ -41,13 +43,13 @@ pub(super) async fn inbox<H: Host>(ctx: &mut Ctx<'_, H>, args: InboxArgs) -> Res
         match wait_for_messages(&relay, &inbox_id, &owner, Duration::from_secs(seconds)).await {
             Ok(true) => {}
             Ok(false) => {
-                say!(ctx, "No new messages.");
+                say!(ctx, "{}", tr!("No new messages."));
                 return Ok(exit::OK);
             }
             Err(e) if e.is(ErrorCode::Unauthorized) => {
                 return lost_inbox(ctx, &relay, &inbox_id).await;
             }
-            Err(e) => return Err(CliError::from(e).context("reading this device's inbox")),
+            Err(e) => return Err(CliError::from(e).context(tr!("reading this device's inbox"))),
         }
     }
     let _lock = ctx.state.lock()?;
@@ -57,17 +59,17 @@ pub(super) async fn inbox<H: Host>(ctx: &mut Ctx<'_, H>, args: InboxArgs) -> Res
             drop(_lock);
             return lost_inbox(ctx, &relay, &inbox_id).await;
         }
-        Err(e) => return Err(CliError::from(e).context("reading this device's inbox")),
+        Err(e) => return Err(CliError::from(e).context(tr!("reading this device's inbox"))),
     };
     if listing.messages.is_empty() {
-        say!(ctx, "No new messages.");
+        say!(ctx, "{}", tr!("No new messages."));
         return Ok(exit::OK);
     }
     let keys = pairing::own_keys(ctx)?;
     if keys.is_empty() {
         return Err(
-            CliError::failure("this device has an inbox but no device key")
-                .with_hint("`kc device rotate` makes a new key and inbox"),
+            CliError::failure(tr!("this device has an inbox but no device key"))
+                .with_hint(tr!("`kc device rotate` makes a new key and inbox")),
         );
     }
     let key_refs: Vec<&DeviceKeyPair> = keys.iter().collect();
@@ -101,14 +103,21 @@ pub(super) async fn inbox<H: Host>(ctx: &mut Ctx<'_, H>, args: InboxArgs) -> Res
                         | InboxError::UnsupportedSuite(_)
                 );
                 if keep {
-                    say!(ctx, "A message was left in the inbox: {e}.");
+                    say!(
+                        ctx,
+                        "{}",
+                        tr!("A message was left in the inbox: {error}.", error = e)
+                    );
                 } else {
-                    let note = if e == InboxError::Replay {
-                        " (or one this device stored before but couldn't delete)"
+                    let text = if e == InboxError::Replay {
+                        tr!(
+                            "A message was dropped: {error} (or one this device stored before but couldn't delete).",
+                            error = e
+                        )
                     } else {
-                        ""
+                        tr!("A message was dropped: {error}.", error = e)
                     };
-                    say!(ctx, "A message was dropped: {e}{note}.");
+                    say!(ctx, "{text}");
                     delete(ctx, &relay, &inbox_id, &owner, &message.msg_id).await;
                 }
                 outcome.failed(e.exit_code());
@@ -119,14 +128,29 @@ pub(super) async fn inbox<H: Host>(ctx: &mut Ctx<'_, H>, args: InboxArgs) -> Res
             .by_fingerprint(&opened.sender_fp)
             .map_or_else(|| opened.sender_fp.short(), |p| p.label.to_string());
         let names: Vec<&str> = opened.items.iter().map(|i| i.name.as_str()).collect();
-        say!(
-            ctx,
-            "From {label}: {}: {}",
-            plural(names.len(), "item"),
-            names.join(", ")
-        );
-        if ctx.interactive() && !ctx.confirm("Store them?", true)? {
-            say!(ctx, "Left in the inbox (it expires within 72 hours).");
+        let (n, names) = (names.len(), names.join(", "));
+        let text = if n == 1 {
+            tr!(
+                "From {label}: {n} item: {names}",
+                label = label,
+                n = n,
+                names = names
+            )
+        } else {
+            tr!(
+                "From {label}: {n} items: {names}",
+                label = label,
+                n = n,
+                names = names
+            )
+        };
+        say!(ctx, "{text}");
+        if ctx.interactive() && !ctx.confirm(&tr!("Store them?"), true)? {
+            say!(
+                ctx,
+                "{}",
+                tr!("Left in the inbox (it expires within 72 hours).")
+            );
             outcome.partial();
             continue;
         }
@@ -143,25 +167,44 @@ pub(super) async fn inbox<H: Host>(ctx: &mut Ctx<'_, H>, args: InboxArgs) -> Res
         };
         apply::print_results(ctx, &applied.results, true);
         if applied.done_before > 0 {
-            say!(
-                ctx,
-                "  ({} of these settled by an earlier run that was interrupted)",
-                plural(applied.done_before, "item")
-            );
+            let n = applied.done_before;
+            let text = if n == 1 {
+                tr!(
+                    "({n} item of these settled by an earlier run that was interrupted)",
+                    n = n
+                )
+            } else {
+                tr!(
+                    "({n} items of these settled by an earlier run that was interrupted)",
+                    n = n
+                )
+            };
+            say!(ctx, "  {text}");
         }
         if applied.not_tried > 0 {
-            say!(
-                ctx,
-                "  ({} not tried yet: the import stops at a failed write)",
-                plural(applied.not_tried, "item")
-            );
+            let n = applied.not_tried;
+            let text = if n == 1 {
+                tr!(
+                    "({n} item not tried yet: the import stops at a failed write)",
+                    n = n
+                )
+            } else {
+                tr!(
+                    "({n} items not tried yet: the import stops at a failed write)",
+                    n = n
+                )
+            };
+            say!(ctx, "  {text}");
         }
         if let Some((e, _)) = &applied.keychain_error {
             // Not seen, not deleted: the next `kc inbox` finishes the rest.
-            say!(ctx, "Keychain error: {e}");
+            say!(ctx, "{}", tr!("Keychain error: {error}", error = e));
             say!(
                 ctx,
-                "The message stays in the inbox; run `kc inbox` again once the keychain works."
+                "{}",
+                tr!(
+                    "The message stays in the inbox; run `kc inbox` again once the keychain works."
+                )
             );
             outcome.applied(applied.exit_code());
             continue;
@@ -219,7 +262,8 @@ async fn lost_inbox<H: Host>(ctx: &mut Ctx<'_, H>, relay: &H::Relay, lost: &str)
     } else {
         say!(
             ctx,
-            "This device's inbox changed while kc was reading it; run `kc inbox` again."
+            "{}",
+            tr!("This device's inbox changed while kc was reading it; run `kc inbox` again.")
         );
     }
     Ok(exit::EXPIRED)
@@ -268,7 +312,11 @@ async fn delete<H: Host>(
     if let Err(e) = relay.delete_message(inbox_id, owner, msg_id).await {
         say!(
             ctx,
-            "Couldn't delete the message from the relay ({e}); it will be skipped next time."
+            "{}",
+            tr!(
+                "Couldn't delete the message from the relay ({error}); it will be skipped next time.",
+                error = e
+            )
         );
     }
 }

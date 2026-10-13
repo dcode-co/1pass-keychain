@@ -3,10 +3,11 @@
 use kc_proto::relay::RelayApi;
 use kc_wire::{ErrorCode, exit};
 
-use super::{Ctx, pairing, say};
+use super::{Ctx, display_width, pad_to, pairing, say};
 use crate::cli::{PeersArgs, PeersCommand};
 use crate::error::{CliError, Result};
 use crate::host::Host;
+use crate::i18n::tr;
 
 pub(super) async fn peers<H: Host>(ctx: &mut Ctx<'_, H>, args: PeersArgs) -> Result<i32> {
     match args.command.unwrap_or(PeersCommand::List) {
@@ -18,17 +19,27 @@ pub(super) async fn peers<H: Host>(ctx: &mut Ctx<'_, H>, args: PeersArgs) -> Res
 fn list<H: Host>(ctx: &mut Ctx<'_, H>) -> Result<i32> {
     let peers = ctx.state.load_peers()?;
     if peers.peers.is_empty() {
-        say!(ctx, "No paired devices. Pair one with `kc pair`.");
+        say!(
+            ctx,
+            "{}",
+            tr!("No paired devices. Pair one with `kc pair`.")
+        );
         return Ok(exit::OK);
     }
+    let (label, fingerprint, paired) = (tr!("LABEL"), tr!("FINGERPRINT"), tr!("PAIRED"));
     let width = peers
         .peers
         .iter()
         .map(|p| p.label.as_str().len())
         .max()
         .unwrap_or(0)
-        .max("LABEL".len());
-    let mut out = format!("{:<width$}  {:<19}  PAIRED\n", "LABEL", "FINGERPRINT");
+        .max(display_width(&label));
+    let fp_width = display_width(&fingerprint).max(19);
+    let mut out = format!(
+        "{}  {}  {paired}\n",
+        pad_to(&label, width),
+        pad_to(&fingerprint, fp_width)
+    );
     for peer in &peers.peers {
         let paired = u64::try_from(peer.paired_at)
             .ok()
@@ -38,9 +49,9 @@ fn list<H: Host>(ctx: &mut Ctx<'_, H>) -> Result<i32> {
                 |t| humantime::format_rfc3339_seconds(t).to_string(),
             );
         out.push_str(&format!(
-            "{:<width$}  {}  {paired}\n",
-            peer.label.as_str(),
-            peer.fingerprint.short()
+            "{}  {}  {paired}\n",
+            pad_to(peer.label.as_str(), width),
+            pad_to(&peer.fingerprint.short(), fp_width)
         ));
     }
     ctx.emit(out.as_bytes())?;
@@ -53,8 +64,8 @@ async fn remove<H: Host>(ctx: &mut Ctx<'_, H>, label: &str) -> Result<i32> {
     let lock = ctx.state.lock()?;
     let mut peers = ctx.state.load_peers()?;
     let Some(index) = peers.position(label) else {
-        return Err(CliError::not_found("no paired device has that label")
-            .with_hint("`kc peers` lists them"));
+        return Err(CliError::not_found(tr!("no paired device has that label"))
+            .with_hint(tr!("`kc peers` lists them")));
     };
     let peer = peers.peers[index].clone();
 
@@ -105,21 +116,28 @@ async fn remove<H: Host>(ctx: &mut Ctx<'_, H>, label: &str) -> Result<i32> {
 
     say!(
         ctx,
-        "Unpaired {} ({}).",
-        peer.label,
-        peer.fingerprint.short()
+        "{}",
+        tr!(
+            "Unpaired {label} ({fingerprint}).",
+            label = peer.label,
+            fingerprint = peer.fingerprint.short()
+        )
     );
     match relay_error {
         None => Ok(exit::OK),
         Some(e) => {
             say!(
                 ctx,
-                "Its permission to post to this device's inbox couldn't be revoked on the relay: {}",
-                e.message
+                "{}",
+                tr!(
+                    "Its permission to post to this device's inbox couldn't be revoked on the relay: {error}",
+                    error = e.message
+                )
             );
             say!(
                 ctx,
-                "Its messages are refused here anyway, and the next pairing revokes it."
+                "{}",
+                tr!("Its messages are refused here anyway, and the next pairing revokes it.")
             );
             Ok(exit::RELAY_UNAVAILABLE)
         }

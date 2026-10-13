@@ -12,10 +12,11 @@ use kc_proto::{ItemName, SecretBytes};
 use kc_store::{ErrorKind, ItemKind, MAX_NAME_LEN, MAX_VALUE_LEN, Origin, StoreError};
 use kc_wire::exit;
 
-use super::{Ctx, say};
+use super::{Ctx, display_width, pad_to, say};
 use crate::cli::ConflictPolicy;
 use crate::error::{CliError, Result};
 use crate::host::Host;
+use crate::i18n::tr;
 use crate::state::StateDir;
 
 /// `Rejected(u16)` codes (PROTOCOL §3).
@@ -354,23 +355,37 @@ pub(crate) fn numbered(name: &ItemName, n: u32) -> Option<ItemName> {
 }
 
 fn ask<H: Host>(ctx: &mut Ctx<'_, H>, name: &ItemName, overwrite: bool) -> Result<ConflictPolicy> {
-    say!(ctx, "{name} already exists here with a different value.");
-    let mut options = vec![(
-        ConflictPolicy::Skip,
-        "Keep this device's value (skip)".to_owned(),
-    )];
+    say!(
+        ctx,
+        "{}",
+        tr!(
+            "{name} already exists here with a different value.",
+            name = name
+        )
+    );
+    let mut options = vec![(ConflictPolicy::Skip, tr!("Keep this device's value (skip)"))];
     if overwrite {
         options.push((
             ConflictPolicy::Overwrite,
-            format!("Replace it (`kc restore {name}` brings the old value back)"),
+            tr!(
+                "Replace it (`kc restore {name}` brings the old value back)",
+                name = name
+            ),
         ));
     }
     options.push((
         ConflictPolicy::Rename,
-        format!("Store the new value under another name ({name}-2 or the next free one)"),
+        tr!(
+            "Store the new value under another name ({name}-2 or the next free one)",
+            name = name
+        ),
     ));
     let labels: Vec<String> = options.iter().map(|(_, label)| label.clone()).collect();
-    let choice = ctx.select(&format!("What should happen to {name}?"), &labels, 0)?;
+    let choice = ctx.select(
+        &tr!("What should happen to {name}?", name = name),
+        &labels,
+        0,
+    )?;
     Ok(options
         .get(choice)
         .map_or(ConflictPolicy::Skip, |(policy, _)| *policy))
@@ -379,34 +394,34 @@ fn ask<H: Host>(ctx: &mut Ctx<'_, H>, name: &ItemName, overwrite: bool) -> Resul
 /// One line per item, for the device that stored them (`local`) or the one that sent them.
 pub(crate) fn describe(status: &ItemStatus, local: bool) -> String {
     match status {
-        ItemStatus::Stored => "stored".into(),
-        ItemStatus::Unchanged => "unchanged (same value)".into(),
+        ItemStatus::Stored => tr!("stored"),
+        ItemStatus::Unchanged => tr!("unchanged (same value)"),
         ItemStatus::SkippedConflict if local => {
-            "skipped: a different value is already here (use --on-conflict)".into()
+            tr!("skipped: a different value is already here (use --on-conflict)")
         }
         ItemStatus::SkippedConflict => {
-            "skipped: the other device already has a different value".into()
+            tr!("skipped: the other device already has a different value")
         }
-        ItemStatus::Renamed(name) => format!("stored as {name}"),
-        ItemStatus::Rejected(REJECT_INVALID) => "rejected: invalid item".into(),
-        ItemStatus::Rejected(REJECT_POLICY) => "declined".into(),
-        ItemStatus::Rejected(REJECT_KEYCHAIN) => "not stored: the keychain write failed".into(),
-        ItemStatus::Rejected(REJECT_TOO_LARGE) => "not stored: too large for the keychain".into(),
-        ItemStatus::Rejected(code) => format!("rejected (code {code})"),
+        ItemStatus::Renamed(name) => tr!("stored as {name}", name = name),
+        ItemStatus::Rejected(REJECT_INVALID) => tr!("rejected: invalid item"),
+        ItemStatus::Rejected(REJECT_POLICY) => tr!("declined"),
+        ItemStatus::Rejected(REJECT_KEYCHAIN) => tr!("not stored: the keychain write failed"),
+        ItemStatus::Rejected(REJECT_TOO_LARGE) => tr!("not stored: too large for the keychain"),
+        ItemStatus::Rejected(code) => tr!("rejected (code {code})", code = code),
     }
 }
 
 pub(crate) fn print_results<H: Host>(ctx: &mut Ctx<'_, H>, results: &[ItemResult], local: bool) {
     let width = results
         .iter()
-        .map(|r| r.name.as_str().len())
+        .map(|r| display_width(r.name.as_str()))
         .max()
         .unwrap_or(0);
     for result in results {
         say!(
             ctx,
-            "  {:<width$}  {}",
-            result.name.as_str(),
+            "  {}  {}",
+            pad_to(result.name.as_str(), width),
             describe(&result.status, local)
         );
     }

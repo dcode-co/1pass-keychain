@@ -32,6 +32,7 @@ use zeroize::Zeroizing;
 use super::{Ctx, say};
 use crate::error::{CliError, Result};
 use crate::host::Host;
+use crate::i18n::tr;
 use crate::keychain::Keychain;
 use crate::settings::Settings;
 use crate::state::{Peer, PendingWriter, StateLock, WRITER_KEY_PREFIX};
@@ -45,8 +46,9 @@ pub(crate) const PREV_KEY_SECS: i64 = INBOX_MESSAGE_TTL_SECS as i64;
 
 fn parse_key(value: &SecretValue) -> Result<DeviceKeyPair> {
     DeviceKeyPair::from_secret_bytes(value.as_bytes()).map_err(|_| {
-        CliError::failure("this device's key in the keychain is damaged")
-            .with_hint("`kc device rotate` makes a new one (paired devices must pair again)")
+        CliError::failure(tr!("this device's key in the keychain is damaged")).with_hint(tr!(
+            "`kc device rotate` makes a new one (paired devices must pair again)"
+        ))
     })
 }
 
@@ -116,8 +118,9 @@ pub(crate) struct Identity {
 }
 
 fn damaged_inbox() -> CliError {
-    CliError::failure("this device's inbox entry in the keychain is damaged")
-        .with_hint("`kc device rotate` makes a new inbox (paired devices must pair again)")
+    CliError::failure(tr!("this device's inbox entry in the keychain is damaged")).with_hint(tr!(
+        "`kc device rotate` makes a new inbox (paired devices must pair again)"
+    ))
 }
 
 /// What the keychain's `inbox-owner` slot holds.
@@ -151,13 +154,13 @@ pub(crate) fn owned_inbox<H: Host>(
 }
 
 fn foreign_inbox() -> CliError {
-    CliError::failure(
+    CliError::failure(tr!(
         "this device's inbox was set up with another kc config directory, which holds its \
-         paired devices",
-    )
-    .with_hint(
-        "use that directory (KC_CONFIG_DIR), or run `kc device rotate` to start over with this one",
-    )
+         paired devices"
+    ))
+    .with_hint(tr!(
+        "use that directory (KC_CONFIG_DIR), or run `kc device rotate` to start over with this one"
+    ))
 }
 
 /// [`own_inbox`], from a store.
@@ -201,7 +204,7 @@ pub(crate) fn install_inbox<H: Host>(
     if !valid_inbox(inbox_id, owner) {
         return Err(CliError::new(
             kc_wire::exit::RELAY_UNAVAILABLE,
-            "the relay returned an invalid inbox; nothing was changed",
+            tr!("the relay returned an invalid inbox; nothing was changed"),
         ));
     }
     let mut slot = Zeroizing::new(String::with_capacity(inbox_id.len() + 1 + owner.len()));
@@ -258,7 +261,7 @@ async fn new_inbox<H: Host>(
     let created = relay
         .create_inbox()
         .await
-        .map_err(|e| CliError::from(e).context("making this device's inbox on the relay"))?;
+        .map_err(|e| CliError::from(e).context(tr!("making this device's inbox on the relay")))?;
     let owner = Zeroizing::new(created.owner_token);
     let inbox_id = created.inbox_id;
     if let Err(e) = install_inbox(ctx, held, &inbox_id, &owner) {
@@ -316,13 +319,19 @@ pub(crate) async fn replace_lost_inbox<H: Host>(
 pub(crate) fn lost_inbox_notice<H: Host>(ctx: &mut Ctx<'_, H>) {
     say!(
         ctx,
-        "This device's inbox was gone from the relay (the relay deletes inboxes nobody reads \
-         for 30 days), so a new one was made. Messages sent to the old one are lost."
+        "{}",
+        tr!(
+            "This device's inbox was gone from the relay (the relay deletes inboxes nobody reads \
+             for 30 days), so a new one was made. Messages sent to the old one are lost."
+        )
     );
     say!(
         ctx,
-        "Paired devices can't send here until they pair again (`kc pair` here, `kc pair \
-         --join` there). Running `kc inbox` now and then keeps the inbox alive."
+        "{}",
+        tr!(
+            "Paired devices can't send here until they pair again (`kc pair` here, `kc pair \
+             --join` there). Running `kc inbox` now and then keeps the inbox alive."
+        )
     );
 }
 
@@ -361,15 +370,17 @@ pub(crate) async fn prepare_offer<H: Host>(
     };
     let writer_id = registered.map_err(|e| {
         let full = e.is(ErrorCode::InboxFull);
-        let err = CliError::from(e).context("registering the other device on this inbox");
+        let err = CliError::from(e).context(tr!("registering the other device on this inbox"));
         if full {
-            err.with_hint("this inbox already accepts 16 devices; unpair some with `kc peers rm`")
+            err.with_hint(tr!(
+                "this inbox already accepts 16 devices; unpair some with `kc peers rm`"
+            ))
         } else {
             err
         }
     })?;
     let inbox_id = InboxId::from_b64url(&ident.inbox_id)
-        .ok_or_else(|| CliError::failure("the relay returned an invalid inbox id"))?;
+        .ok_or_else(|| CliError::failure(tr!("the relay returned an invalid inbox id")))?;
     Ok(Prepared {
         offer: PairOffer {
             suggested_label: ctx.label(),
@@ -561,7 +572,7 @@ fn commit_peer<H: Host>(
     if fp == ident.key.fingerprint() {
         return Err(CliError::new(
             kc_wire::exit::AUTH_FAILED,
-            "the other device has this device's own key; not pairing",
+            tr!("the other device has this device's own key; not pairing"),
         ));
     }
     let _lock = ctx.state.lock()?;
@@ -570,16 +581,16 @@ fn commit_peer<H: Host>(
     let key_now = device_key(ctx)?.map(|k| k.fingerprint());
     let inbox_now = own_inbox(ctx)?.map(|(id, _)| id);
     if key_now != Some(ident.key.fingerprint()) || inbox_now.as_deref() != Some(&ident.inbox_id) {
-        return Err(CliError::failure(
-            "this device's key or inbox changed while pairing (`kc device rotate`?); pair again",
-        ));
+        return Err(CliError::failure(tr!(
+            "this device's key or inbox changed while pairing (`kc device rotate`?); pair again"
+        )));
     }
     let mut peers = ctx.state.load_peers()?;
     let ours = |w: &PendingWriter| w.writer_id.as_deref() == Some(writer_id);
     if !peers.pending_writers.iter().any(|w| ours(w) && !w.revoking) {
-        return Err(CliError::failure(
-            "the pairing took too long and its registration was revoked; pair again",
-        ));
+        return Err(CliError::failure(tr!(
+            "the pairing took too long and its registration was revoked; pair again"
+        )));
     }
     let token_key = format!(
         "{WRITER_KEY_PREFIX}{}/{}",
@@ -645,10 +656,21 @@ fn token_tag(token: &WriterToken) -> String {
 
 /// Tells the person how to use the new pairing.
 pub(crate) fn announce_pairing<H: Host>(ctx: &mut Ctx<'_, H>, label: &Label, fp: &Fingerprint) {
-    say!(ctx, "Paired with {label} (fingerprint {}).", fp.short());
     say!(
         ctx,
-        "Send to it without a code: kc send NAME --to {}. It picks items up with `kc inbox`.",
-        shell_word(label.as_str())
+        "{}",
+        tr!(
+            "Paired with {label} (fingerprint {fingerprint}).",
+            label = label,
+            fingerprint = fp.short()
+        )
+    );
+    say!(
+        ctx,
+        "{}",
+        tr!(
+            "Send to it without a code: kc send NAME --to {label}. It picks items up with `kc inbox`.",
+            label = shell_word(label.as_str())
+        )
     );
 }

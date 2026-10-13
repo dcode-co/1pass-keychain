@@ -19,6 +19,7 @@
 
 use crate::cli::{Command, ConflictPolicy, DeviceCommand};
 use crate::error::CliError;
+use crate::i18n::tr;
 
 /// What decides interactivity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,22 +44,22 @@ impl Interactivity {
     }
 
     /// Why the run isn't interactive.
-    pub fn reasons(&self) -> Vec<&'static str> {
+    pub fn reasons(&self) -> Vec<String> {
         let mut reasons = Vec::new();
         if !self.stdin_terminal {
-            reasons.push("stdin is not a terminal");
+            reasons.push(tr!("stdin is not a terminal"));
         }
         if !self.stderr_terminal {
-            reasons.push("stderr is not a terminal");
+            reasons.push(tr!("stderr is not a terminal"));
         }
         if self.ci {
-            reasons.push("CI is set");
+            reasons.push(tr!("CI is set"));
         }
         if self.claudecode {
-            reasons.push("CLAUDECODE is set");
+            reasons.push(tr!("CLAUDECODE is set"));
         }
         if self.no_input {
-            reasons.push("--no-input was given");
+            reasons.push(tr!("--no-input was given"));
         }
         reasons
     }
@@ -89,31 +90,35 @@ pub enum Gate {
 
 impl Gate {
     /// What a non-interactive run needs instead.
-    fn explain(self) -> &'static str {
+    fn explain(self) -> String {
         match self {
-            Gate::CodeSend => {
+            Gate::CodeSend => tr!(
                 "sending with a one-time code needs a person at a terminal. Agents and scripts \
                  send to a paired device with `kc send --to LABEL --names A,B`; to allow code \
                  sends without a terminal, set `agent_code_send = true` in config.toml and \
                  pass the code with `--code -`"
+            ),
+            Gate::CodePrompt => tr!("pass `--code -` and pipe the code on stdin"),
+            Gate::Pair => tr!("pairing needs a person at a terminal on both devices"),
+            Gate::Remember => {
+                tr!("`--remember` pairs the devices and needs a person at a terminal")
             }
-            Gate::CodePrompt => "pass `--code -` and pipe the code on stdin",
-            Gate::Pair => "pairing needs a person at a terminal on both devices",
-            Gate::Remember => "`--remember` pairs the devices and needs a person at a terminal",
-            Gate::All => "`--all` needs a person at a terminal; name the items with `--names A,B`",
-            Gate::Overwrite => {
+            Gate::All => {
+                tr!("`--all` needs a person at a terminal; name the items with `--names A,B`")
+            }
+            Gate::Overwrite => tr!(
                 "`--on-conflict overwrite` needs a person at a terminal; use `skip` or `rename`"
-            }
-            Gate::Checklist => {
+            ),
+            Gate::Checklist => tr!(
                 "name the items to send: `kc send NAME…`, `--names A,B` or `--bundle FILE` \
                  (the checklist needs a terminal)"
-            }
-            Gate::ValuePrompt => {
+            ),
+            Gate::ValuePrompt => tr!(
                 "pipe the value on stdin or pass `--from-file PATH` (the hidden prompt needs a \
                  terminal)"
-            }
+            ),
             Gate::Rotate => {
-                "`kc device rotate` ends every pairing and needs a person at a terminal"
+                tr!("`kc device rotate` ends every pairing and needs a person at a terminal")
             }
         }
     }
@@ -156,14 +161,15 @@ impl Policy {
         if refused.is_empty() {
             return Ok(());
         }
-        let mut message = String::from("this needs a person at a terminal:");
+        let mut message = tr!("this needs a person at a terminal:");
         for gate in &refused {
             message.push_str("\n  - ");
-            message.push_str(gate.explain());
+            message.push_str(&gate.explain());
         }
         let reasons = self.interactivity.reasons().join(", ");
-        Err(CliError::interaction(message).with_hint(format!(
-            "kc runs non-interactively here ({reasons}) and never prompts then"
+        Err(CliError::interaction(message).with_hint(tr!(
+            "kc runs non-interactively here ({reasons}) and never prompts then",
+            reasons = reasons
         )))
     }
 }

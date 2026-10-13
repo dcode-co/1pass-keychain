@@ -23,12 +23,13 @@ use zeroize::Zeroize as _;
 
 use super::apply::{self, Conflicts, succeeded};
 use super::items::not_found;
-use super::{Ctx, pairing, plural, say};
+use super::{Ctx, pairing, say};
 use crate::cli::{ConflictPolicy, PairArgs, ReceiveArgs, SendArgs};
 use crate::console::Console as _;
 use crate::error::{CliError, Result};
 use crate::host::Host;
-use crate::settings::line_of;
+use crate::i18n::tr;
+use crate::settings::line_number;
 use crate::state::Peer;
 use crate::values::{item_name, read_file, read_line_secret, shell_word};
 
@@ -37,10 +38,10 @@ const MAX_CODE_LINE: usize = 256;
 
 pub(super) async fn send<H: Host>(ctx: &mut Ctx<'_, H>, args: SendArgs) -> Result<i32> {
     if args.code.as_deref().is_some_and(|c| c != "-") {
-        return Err(CliError::usage(
+        return Err(CliError::usage(tr!(
             "kc never takes a code from the command line (it would stay in shell history and \
-             the process list); pass --code - and pipe the code on stdin",
-        ));
+             the process list); pass --code - and pipe the code on stdin"
+        )));
     }
     let peer = match &args.to {
         Some(label) => Some(find_peer(ctx, label)?),
@@ -48,7 +49,7 @@ pub(super) async fn send<H: Host>(ctx: &mut Ctx<'_, H>, args: SendArgs) -> Resul
     };
     let selection = select_items(ctx, &args)?;
     if selection.names.is_empty() && !args.remember {
-        say!(ctx, "Nothing selected; nothing was sent.");
+        say!(ctx, "{}", tr!("Nothing selected; nothing was sent."));
         return Ok(exit::PARTIAL);
     }
     if peer.is_none() {
@@ -134,10 +135,10 @@ fn select_items<H: Host>(ctx: &mut Ctx<'_, H>, args: &SendArgs) -> Result<Select
                 from_checklist: true,
             });
         }
-        return Err(CliError::not_found("there are no items to send")
-            .with_hint("add one with `kc set NAME`"));
+        return Err(CliError::not_found(tr!("there are no items to send"))
+            .with_hint(tr!("add one with `kc set NAME`")));
     }
-    let chosen = ctx.multi_select("Items to send:", &options)?;
+    let chosen = ctx.multi_select(&tr!("Items to send:"), &options)?;
     let names = chosen
         .into_iter()
         .filter_map(|i| options.get(i))
@@ -160,15 +161,24 @@ struct Bundle {
 fn read_bundle(path: &Path) -> Result<Vec<String>> {
     let shown = path.display();
     let bytes = read_file(path, 1 << 20)?;
-    let not_a_bundle = |line: String| {
+    let not_a_bundle = |line: Option<usize>| {
         // The parser's own message could quote the file, and a mistaken --bundle .env would
         // print a secret. Only the line number is shown.
-        CliError::usage(format!(
-            "{shown} isn't a bundle file{line}: expected items = [\"NAME\", …]"
-        ))
+        CliError::usage(match line {
+            Some(line) => tr!(
+                "{file} isn't a bundle file (line {line}): expected items = [\"NAME\", …]",
+                file = shown,
+                line = line
+            ),
+            None => tr!(
+                "{file} isn't a bundle file: expected items = [\"NAME\", …]",
+                file = shown
+            ),
+        })
     };
-    let text = std::str::from_utf8(&bytes).map_err(|_| not_a_bundle(String::new()))?;
-    let bundle: Bundle = toml::from_str(text).map_err(|e| not_a_bundle(line_of(text, e.span())))?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| not_a_bundle(None))?;
+    let bundle: Bundle =
+        toml::from_str(text).map_err(|e| not_a_bundle(line_number(text, e.span())))?;
     Ok(bundle.items)
 }
 
@@ -205,12 +215,12 @@ fn check_size(items: &[Item]) -> Result<()> {
         .map(|i| i.name.as_str().len() + i.value.len() + 16)
         .sum();
     if total > limit {
-        return Err(CliError::usage(format!(
-            "these items add up to {} KiB; one transfer carries about {} KiB",
-            total.div_ceil(1024),
-            limit / 1024
+        return Err(CliError::usage(tr!(
+            "these items add up to {total} KiB; one transfer carries about {limit} KiB",
+            total = total.div_ceil(1024),
+            limit = limit / 1024
         ))
-        .with_hint("send them in smaller groups"));
+        .with_hint(tr!("send them in smaller groups")));
     }
     Ok(())
 }
@@ -245,12 +255,12 @@ fn check_receipt(names: &[ItemName]) -> Result<()> {
         .take_while(|n| receipt_bound(&names[..*n]) <= MAX_RECEIPT)
         .last()
         .unwrap_or(0);
-    Err(CliError::usage(format!(
-        "{} items are too many for one transfer: the receiving device confirms each one, and \
+    Err(CliError::usage(tr!(
+        "{n} items are too many for one transfer: the receiving device confirms each one, and \
          that receipt must fit in 16 KiB",
-        names.len()
+        n = names.len()
     ))
-    .with_hint(format!("send them in groups of at most {fit}")))
+    .with_hint(tr!("send them in groups of at most {fit}", fit = fit)))
 }
 
 /// Every name, so a person confirming a transfer sees all of it.
@@ -266,8 +276,8 @@ fn names_of(items: &[Item]) -> String {
 
 fn find_peer<H: Host>(ctx: &Ctx<'_, H>, label: &str) -> Result<Peer> {
     ctx.state.load_peers()?.find(label).cloned().ok_or_else(|| {
-        CliError::not_found("no paired device has that label")
-            .with_hint("`kc peers` lists them; `kc pair` pairs a new one")
+        CliError::not_found(tr!("no paired device has that label"))
+            .with_hint(tr!("`kc peers` lists them; `kc pair` pairs a new one"))
     })
 }
 
@@ -279,30 +289,46 @@ async fn send_to_peer<H: Host>(
 ) -> Result<i32> {
     let label = peer.label.clone();
     let key = pairing::device_key(ctx)?.ok_or_else(|| {
-        CliError::not_found("this device has no device key; pair it first with `kc pair`")
-    })?;
-    let stored = ctx.store.get_internal(&peer.token_key())?.ok_or_else(|| {
-        CliError::not_found(format!(
-            "the keychain has no token for sending to {label}; pair with it again"
+        CliError::not_found(tr!(
+            "this device has no device key; pair it first with `kc pair`"
         ))
     })?;
-    let mut raw: [u8; 32] = stored
-        .as_bytes()
-        .try_into()
-        .map_err(|_| CliError::failure(format!("the token for {label} is damaged; pair again")))?;
+    let stored = ctx.store.get_internal(&peer.token_key())?.ok_or_else(|| {
+        CliError::not_found(tr!(
+            "the keychain has no token for sending to {label}; pair with it again",
+            label = label
+        ))
+    })?;
+    let mut raw: [u8; 32] = stored.as_bytes().try_into().map_err(|_| {
+        CliError::failure(tr!(
+            "the token for {label} is damaged; pair again",
+            label = label
+        ))
+    })?;
     let token = WriterToken::from_bytes(raw);
     raw.zeroize();
     drop(stored);
 
     if ctx.interactive() && confirm {
-        say!(ctx, "Items: {}", names_of(&items));
-        let question = format!(
-            "Send {} to {label} ({})?",
-            plural(items.len(), "item"),
-            peer.fingerprint.short()
-        );
+        say!(ctx, "{}", tr!("Items: {names}", names = names_of(&items)));
+        let (n, fingerprint) = (items.len(), peer.fingerprint.short());
+        let question = if n == 1 {
+            tr!(
+                "Send {n} item to {label} ({fingerprint})?",
+                n = n,
+                label = label,
+                fingerprint = fingerprint
+            )
+        } else {
+            tr!(
+                "Send {n} items to {label} ({fingerprint})?",
+                n = n,
+                label = label,
+                fingerprint = fingerprint
+            )
+        };
         if !ctx.confirm(&question, true)? {
-            say!(ctx, "Nothing was sent.");
+            say!(ctx, "{}", tr!("Nothing was sent."));
             return Ok(exit::PARTIAL);
         }
     }
@@ -315,11 +341,20 @@ async fn send_to_peer<H: Host>(
         .post_message(&peer.inbox_id.to_b64url(), &token.bearer(), &sealed.body)
         .await
         .map_err(|e| post_error(e, &label))?;
-    say!(
-        ctx,
-        "Sent {} to {label}. They're stored there when `kc inbox` runs (within 72 hours).",
-        plural(count, "item")
-    );
+    let text = if count == 1 {
+        tr!(
+            "Sent {n} item to {label}. They're stored there when `kc inbox` runs (within 72 hours).",
+            n = count,
+            label = label
+        )
+    } else {
+        tr!(
+            "Sent {n} items to {label}. They're stored there when `kc inbox` runs (within 72 hours).",
+            n = count,
+            label = label
+        )
+    };
+    say!(ctx, "{text}");
     Ok(exit::OK)
 }
 
@@ -327,32 +362,46 @@ fn post_error(e: RelayError, label: &Label) -> CliError {
     match e.code() {
         Some(ErrorCode::Unauthorized) => CliError::new(
             exit::AUTH_FAILED,
-            format!("{label} no longer accepts messages from this device"),
-        )
-        .with_hint("it was unpaired there, or one of the devices rotated its key; pair again"),
-        Some(ErrorCode::InboxFull) => CliError::new(
-            exit::RELAY_UNAVAILABLE,
-            format!(
-                "{label}'s inbox is full: at most 10 messages (2 MiB) from each device, and 20 \
-                 in all, wait there"
+            tr!(
+                "{label} no longer accepts messages from this device",
+                label = label
             ),
         )
-        .with_hint(format!("run `kc inbox` on {label}, then send again")),
+        .with_hint(tr!(
+            "it was unpaired there, or one of the devices rotated its key; pair again"
+        )),
+        Some(ErrorCode::InboxFull) => CliError::new(
+            exit::RELAY_UNAVAILABLE,
+            tr!(
+                "{label}'s inbox is full: at most 10 messages (2 MiB) from each device, and 20 \
+                 in all, wait there",
+                label = label
+            ),
+        )
+        .with_hint(tr!(
+            "run `kc inbox` on {label}, then send again",
+            label = label
+        )),
         Some(ErrorCode::RateLimited) => {
-            let wait = e
-                .retry_after()
-                .map_or_else(String::new, |d| format!(" in {} s", d.as_secs().max(1)));
+            let hint = e.retry_after().map_or_else(
+                || tr!("try again"),
+                |d| tr!("try again in {seconds} s", seconds = d.as_secs().max(1)),
+            );
             CliError::new(
                 exit::RELAY_UNAVAILABLE,
-                format!("the relay is limiting messages from this device to {label}"),
+                tr!(
+                    "the relay is limiting messages from this device to {label}",
+                    label = label
+                ),
             )
-            .with_hint(format!("try again{wait}"))
+            .with_hint(hint)
         }
-        Some(ErrorCode::TooLarge) => CliError::usage(format!(
-            "the message to {label} is larger than the relay accepts"
+        Some(ErrorCode::TooLarge) => CliError::usage(tr!(
+            "the message to {label} is larger than the relay accepts",
+            label = label
         ))
-        .with_hint("send fewer items at a time"),
-        _ => CliError::from(e).context(format!("sending to {label}")),
+        .with_hint(tr!("send fewer items at a time")),
+        _ => CliError::from(e).context(tr!("sending to {label}", label = label)),
     }
 }
 
@@ -370,31 +419,44 @@ struct CodeSend {
 /// anyway, the suggested word is shown too.
 fn code_error_text(e: &CodeError, interactive: bool) -> String {
     match e {
-        CodeError::Empty => "no code was entered".into(),
+        CodeError::Empty => tr!("no code was entered"),
         CodeError::BadChannel => {
-            "a code starts with the channel number (1-9999), like 4721-absurd-amulet".into()
+            tr!("a code starts with the channel number (1-9999), like 4721-absurd-amulet")
         }
-        CodeError::WordCount { found } => format!(
+        CodeError::WordCount { found } => tr!(
             "a code has 2 words (transfer) or 3 words (pairing) after the number, but {found} \
-             were entered"
+             were entered",
+            found = found
         ),
-        CodeError::WrongKind { expected, found } => format!(
-            "this needs a {expected} code ({} words), but a {found} code was entered",
-            expected.word_count()
-        ),
+        // A whole sentence per kind (the code found is always the other one), so the kind
+        // names are translated with it.
+        CodeError::WrongKind { expected, .. } => match expected {
+            CodeKind::Pairing => {
+                tr!("this needs a pairing code (3 words), but a transfer code was entered")
+            }
+            CodeKind::Transfer => {
+                tr!("this needs a transfer code (2 words), but a pairing code was entered")
+            }
+        },
         CodeError::UnknownWord {
             position,
             suggestion,
             ..
         } => match suggestion {
-            Some(word) if interactive => {
-                format!("word {position} is not a code word; did you mean {word:?}?")
-            }
-            _ => format!("word {position} is not a code word; check its spelling"),
+            Some(word) if interactive => tr!(
+                "word {position} is not a code word; did you mean {word}?",
+                position = position,
+                word = format!("{word:?}")
+            ),
+            _ => tr!(
+                "word {position} is not a code word; check its spelling",
+                position = position
+            ),
         },
-        CodeError::MisplacedWord { position } => {
-            format!("word {position} belongs at a different position; check the order of the words")
-        }
+        CodeError::MisplacedWord { position } => tr!(
+            "word {position} belongs at a different position; check the order of the words",
+            position = position
+        ),
     }
 }
 
@@ -408,30 +470,34 @@ fn read_code<H: Host>(
         None => Code::parse(typed),
     };
     if from_stdin {
-        let line = read_line_secret(ctx.host.console().stdin(), MAX_CODE_LINE)
-            .map_err(|e| CliError::usage(format!("can't read the code from stdin: {e}")))?;
+        let line = read_line_secret(ctx.host.console().stdin(), MAX_CODE_LINE).map_err(|e| {
+            CliError::usage(tr!("can't read the code from stdin: {error}", error = e))
+        })?;
         return parse(&line).map_err(|e| {
-            let err = CliError::usage(format!("invalid code: {}", code_error_text(&e, false)));
+            let err = CliError::usage(tr!(
+                "invalid code: {reason}",
+                reason = code_error_text(&e, false)
+            ));
             match e {
-                CodeError::WrongKind { .. } => {
-                    err.with_hint("on the other device, run `kc receive --remember` or `kc pair`")
-                }
+                CodeError::WrongKind { .. } => err.with_hint(tr!(
+                    "on the other device, run `kc receive --remember` or `kc pair`"
+                )),
                 _ => err,
             }
         });
     }
     let prompt = match kind {
-        Some(CodeKind::Pairing) => "Pairing code shown on the other device:",
-        _ => "Code shown on the other device:",
+        Some(CodeKind::Pairing) => tr!("Pairing code shown on the other device:"),
+        _ => tr!("Code shown on the other device:"),
     };
     for _ in 0..5 {
-        let typed = ctx.text(prompt)?;
+        let typed = ctx.text(&prompt)?;
         match parse(&typed) {
             Ok(code) => return Ok(code),
             Err(e) => say!(ctx, "{}", code_error_text(&e, true)),
         }
     }
-    Err(CliError::usage("too many invalid codes"))
+    Err(CliError::usage(tr!("too many invalid codes")))
 }
 
 /// Sends `items` over a one-time code.
@@ -463,27 +529,34 @@ async fn send_with_code<H: Host>(
     drop(code);
     let sas = tx.sas();
     if let Some(sas) = &sas {
-        say!(ctx, "Check that both screens show the same words:  {sas}");
+        let (before, after) = crate::i18n::around(
+            "Check that both screens show the same words:  {words}",
+            "words",
+        );
+        say!(ctx, "{before}{sas}{after}");
     }
     if ctx.interactive() && opts.confirm && !items.is_empty() {
-        say!(ctx, "Items: {}", names_of(&items));
-        let question = format!(
-            "Send {} to the device showing this code?",
-            plural(items.len(), "item")
-        );
+        say!(ctx, "{}", tr!("Items: {names}", names = names_of(&items)));
+        let n = items.len();
+        let question = if n == 1 {
+            tr!("Send {n} item to the device showing this code?", n = n)
+        } else {
+            tr!("Send {n} items to the device showing this code?", n = n)
+        };
         let answer = ctx.confirm(&question, true);
         if !matches!(answer, Ok(true)) {
             // Closing the channel tells the other side at once, instead of at its timeout.
             tx.abort().await;
             answer?;
-            say!(ctx, "Cancelled; nothing was sent.");
+            say!(ctx, "{}", tr!("Cancelled; nothing was sent."));
             return Ok(exit::PARTIAL);
         }
     }
     if sas.is_some() && !opts.remember {
         say!(
             ctx,
-            "The other device asked to pair; this send doesn't (that needs --remember)."
+            "{}",
+            tr!("The other device asked to pair; this send doesn't (that needs --remember).")
         );
     }
     let prepared = match &mut ident {
@@ -510,11 +583,10 @@ async fn send_with_code<H: Host>(
             let nothing_sent = matches!(e, SessionError::Invalid(_) | SessionError::TooLarge(_));
             let mut err = CliError::from(e);
             if !nothing_sent && sent > 0 {
-                err.hint = Some(
+                err.hint = Some(tr!(
                     "no receipt came back, so it isn't known whether the other device stored \
                      the items; check there with `kc list` or `kc get NAME --fingerprint`"
-                        .into(),
-                );
+                ));
             }
             return Err(err);
         }
@@ -526,7 +598,12 @@ async fn send_with_code<H: Host>(
         exit::PARTIAL
     };
     if sent > 0 {
-        say!(ctx, "Sent {}:", plural(sent, "item"));
+        let text = if sent == 1 {
+            tr!("Sent {n} item:", n = sent)
+        } else {
+            tr!("Sent {n} items:", n = sent)
+        };
+        say!(ctx, "{text}");
         apply::print_results(ctx, &ack.results, false);
     }
     let (Some(ident), Some(prepared)) = (ident, prepared) else {
@@ -536,7 +613,8 @@ async fn send_with_code<H: Host>(
         pairing::discard_offer(ctx, &relay, &ident, prepared).await;
         say!(
             ctx,
-            "The other device didn't pair (it declined, or ran without --remember)."
+            "{}",
+            tr!("The other device didn't pair (it declined, or ran without --remember).")
         );
         return Ok(exit::PARTIAL);
     };
@@ -548,24 +626,14 @@ async fn send_with_code<H: Host>(
         }
     };
     let fp = their.device_pk.fingerprint();
-    if known {
-        say!(
-            ctx,
-            "The other device is {label}, already paired (fingerprint {}).",
-            fp.short()
-        );
-    } else {
-        say!(
-            ctx,
-            "The other device calls itself {} (fingerprint {}).",
-            their.suggested_label,
-            fp.short()
-        );
-    }
+    announce_offer(ctx, &label, known, their, &fp);
     // The receiving screen shows its words now. The policy keeps non-interactive runs from
     // getting here (`--remember` needs a terminal); without one, nothing is paired.
     let matched = if ctx.interactive() {
-        let question = format!("Do both screens show the same words? Pair with {label}?");
+        let question = tr!(
+            "Do both screens show the same words? Pair with {label}?",
+            label = label
+        );
         match ctx.confirm(&question, false) {
             Ok(answer) => answer,
             Err(e) => {
@@ -583,18 +651,47 @@ async fn send_with_code<H: Host>(
         pairing::discard_offer(ctx, &relay, &ident, prepared).await;
         say!(
             ctx,
-            "Not paired. The other device may list this one as paired; remove it there with \
-             `kc peers rm`."
+            "{}",
+            tr!(
+                "Not paired. The other device may list this one as paired; remove it there with \
+                 `kc peers rm`."
+            )
         );
         code = exit::AUTH_FAILED;
     }
     Ok(code)
 }
 
+/// Who the device offering to pair is: a known peer, or the label it suggests.
+fn announce_offer<H: Host>(
+    ctx: &mut Ctx<'_, H>,
+    label: &Label,
+    known: bool,
+    offer: &PairOffer,
+    fp: &kc_proto::Fingerprint,
+) {
+    let text = if known {
+        tr!(
+            "The other device is {label}, already paired (fingerprint {fingerprint}).",
+            label = label,
+            fingerprint = fp.short()
+        )
+    } else {
+        tr!(
+            "The other device calls itself {label} (fingerprint {fingerprint}).",
+            label = offer.suggested_label,
+            fingerprint = fp.short()
+        )
+    };
+    say!(ctx, "{text}");
+}
+
 /// One pairing at a time on this device.
 fn pairing_lock<H: Host>(ctx: &Ctx<'_, H>) -> Result<crate::state::StateLock> {
     ctx.state.try_lock_pairing().ok_or_else(|| {
-        CliError::failure("another pairing is under way on this device; finish or cancel it first")
+        CliError::failure(tr!(
+            "another pairing is under way on this device; finish or cancel it first"
+        ))
     })
 }
 
@@ -634,7 +731,8 @@ async fn receive_flow<H: Host>(
     let mut rx = ReceiverSession::open(&relay, kind, ctx.host.session_options()).await?;
     {
         let code = rx.code().to_canonical();
-        say!(ctx, "Code: {}", code.as_str());
+        let (before, after) = crate::i18n::around("Code: {code}", "code");
+        say!(ctx, "{before}{}{after}", code.as_str());
         let other = match (pair_command, remember) {
             (true, _) => "kc pair --join",
             (false, true) => "kc send --remember NAME…",
@@ -642,7 +740,11 @@ async fn receive_flow<H: Host>(
         };
         say!(
             ctx,
-            "On the other device, run `{other}` and enter the code. It works once, for up to 10 minutes."
+            "{}",
+            tr!(
+                "On the other device, run `{command}` and enter the code. It works once, for up to 10 minutes.",
+                command = other
+            )
         );
         ctx.host.console().code_shown(&code);
     }
@@ -652,59 +754,55 @@ async fn receive_flow<H: Host>(
     if receipt_bound(items.iter().map(|i| &i.name)) > MAX_RECEIPT {
         let count = items.len();
         rx.abort().await;
-        return Err(CliError::usage(format!(
+        return Err(CliError::usage(tr!(
             "the other device sent {count} items at once, more than one transfer can confirm; \
-             nothing was stored"
+             nothing was stored",
+            count = count
         ))
-        .with_hint("send them in smaller groups"));
+        .with_hint(tr!("send them in smaller groups")));
     }
 
     let peer_label = match &payload.pair {
         Some(offer) => {
             let (label, known) = local_label(ctx, offer)?;
             let fp = offer.device_pk.fingerprint();
-            if known {
-                say!(
-                    ctx,
-                    "The other device is {label}, already paired (fingerprint {}).",
-                    fp.short()
-                );
-            } else {
-                say!(
-                    ctx,
-                    "The other device calls itself {} (fingerprint {}).",
-                    offer.suggested_label,
-                    fp.short()
-                );
-            }
+            announce_offer(ctx, &label, known, offer, &fp);
             Some(label)
         }
         None => None,
     };
     if let Some(sas) = &received.sas {
-        say!(ctx, "Check that both screens show the same words:  {sas}");
+        let (before, after) = crate::i18n::around(
+            "Check that both screens show the same words:  {words}",
+            "words",
+        );
+        say!(ctx, "{before}{sas}{after}");
     }
     if !items.is_empty() {
-        say!(
-            ctx,
-            "Received {}: {}",
-            plural(items.len(), "item"),
-            names_of(items)
-        );
+        let (n, names) = (items.len(), names_of(items));
+        let text = if n == 1 {
+            tr!("Received {n} item: {names}", n = n, names = names)
+        } else {
+            tr!("Received {n} items: {names}", n = n, names = names)
+        };
+        say!(ctx, "{text}");
     }
     let pairing = ident.is_some() && payload.pair.is_some();
     if remember && payload.pair.is_none() {
         say!(
             ctx,
-            "The other device didn't offer to pair (it needs --remember)."
+            "{}",
+            tr!("The other device didn't offer to pair (it needs --remember).")
         );
     }
 
     if ctx.interactive() && (pairing || !items.is_empty()) {
         let question = match (pairing, items.len()) {
-            (true, 0) => "Do the words match? Pair with this device?".to_owned(),
-            (true, n) => format!("Do the words match? Pair and store {}?", plural(n, "item")),
-            (false, n) => format!("Store {}?", plural(n, "item")),
+            (true, 0) => tr!("Do the words match? Pair with this device?"),
+            (true, 1) => tr!("Do the words match? Pair and store {n} item?", n = 1),
+            (true, n) => tr!("Do the words match? Pair and store {n} items?", n = n),
+            (false, 1) => tr!("Store {n} item?", n = 1),
+            (false, n) => tr!("Store {n} items?", n = n),
         };
         let answer = match ctx.confirm(&question, !pairing) {
             Ok(answer) => answer,
@@ -716,7 +814,7 @@ async fn receive_flow<H: Host>(
         };
         if !answer {
             let _ = rx.ack(apply::declined(items), None).await;
-            say!(ctx, "Nothing was stored.");
+            say!(ctx, "{}", tr!("Nothing was stored."));
             return Ok(if pairing {
                 exit::AUTH_FAILED
             } else {
@@ -734,7 +832,7 @@ async fn receive_flow<H: Host>(
         Err(e) => {
             // A conflict question was interrupted; items before it may be stored.
             rx.abort().await;
-            return Err(e.with_hint("items before the interrupted one may be stored here"));
+            return Err(e.with_hint(tr!("items before the interrupted one may be stored here")));
         }
     };
 
@@ -761,31 +859,32 @@ async fn receive_flow<H: Host>(
     }
     let acked = rx.ack(applied.results.clone(), our_offer).await;
     if !applied.results.is_empty() {
-        say!(ctx, "Stored here:");
+        say!(ctx, "{}", tr!("Stored here:"));
         apply::print_results(ctx, &applied.results, true);
     }
     if let Err(e) = acked {
-        let err = CliError::from(e).context(
-            "the items above are stored here, but the receipt didn't reach the other device",
-        );
+        let err = CliError::from(e).context(tr!(
+            "the items above are stored here, but the receipt didn't reach the other device"
+        ));
         return Err(match paired {
-            Some((label, _)) => err.with_hint(format!(
+            Some((label, _)) => err.with_hint(tr!(
                 "this device paired with {label}; if the other side reports a failure, run \
-                 `kc peers rm {}` here and pair again",
-                shell_word(label.as_str())
+                 `kc peers rm {word}` here and pair again",
+                label = label,
+                word = shell_word(label.as_str())
             )),
             None => err,
         });
     }
     if let Some((e, _)) = &applied.keychain_error {
-        say!(ctx, "Keychain error: {e}");
+        say!(ctx, "{}", tr!("Keychain error: {error}", error = e));
     }
     let mut code = applied.exit_code();
     if let Some((label, fp)) = &paired {
         pairing::announce_pairing(ctx, label, fp);
     } else if remember {
         if let Some(e) = pair_error {
-            say!(ctx, "Not paired: {}", e.message);
+            say!(ctx, "{}", tr!("Not paired: {reason}", reason = e.message));
             if code == exit::OK {
                 code = e.code;
             }

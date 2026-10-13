@@ -1,5 +1,7 @@
 # 1pass keychain (`kc`)
 
+**English** · [한국어](README.ko.md) · [日本語](README.ja.md) · [简体中文](README.zh-Hans.md) · [繁體中文](README.zh-Hant.md) · [Español](README.es.md) · [Français](README.fr.md) · [Deutsch](README.de.md)
+
 Move secrets between **your own devices' OS keychains** — macOS Keychain,
 Linux Secret Service and Windows Credential Manager — at the moment you need
 them, without a cloud vault.
@@ -140,6 +142,20 @@ lost. See [docs/SECURITY.md](docs/SECURITY.md) for when to use `kc device rotate
 | `kc receive` / `kc send [NAMES…]` | move items with a one-time code |
 | `kc pair`, `kc peers`, `kc inbox`, `kc device` | remembered devices |
 | `kc doctor` | check the keychain, the relay and the configuration |
+
+## Languages
+
+kc's messages and `kc --help` come in English, 한국어, 日本語, 简体中文, 繁體中文,
+Español, Français and Deutsch. At a terminal kc follows your locale (`LC_ALL`,
+`LC_MESSAGES`, `LANG` and `LANGUAGE`, then the system language). Scripts and
+agents get English unless `KC_LANG` is set. Pick one with `KC_LANG`:
+
+```console
+$ KC_LANG=ko kc doctor
+```
+
+`KC_LANG` takes `en`, `ko`, `ja`, `zh-Hans`, `zh-Hant`, `es`, `fr` or `de`.
+Values, item names, codes and JSON output are never translated.
 
 ## Status
 
