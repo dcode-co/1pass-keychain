@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
-use kc_cli::{CliError, Console, Host, HttpRelay, PromptError, RelayUrl};
+use kc_cli::{CliError, Console, Host, HttpRelay, LocalAuthOutcome, PromptError, RelayUrl};
 use kc_proto::memory_relay::MemoryRelay;
 use kc_proto::relay::{RelayApi, RelayError};
 use kc_proto::session::SessionOptions;
@@ -186,6 +186,7 @@ pub struct Run {
     pub terminal: bool,
     pub stdout_terminal: bool,
     pub answers: Vec<Answer>,
+    pub local_auth: VecDeque<LocalAuthOutcome>,
     pub env: Vec<(String, String)>,
     pub code_tx: Option<oneshot::Sender<String>>,
 }
@@ -198,6 +199,7 @@ impl Run {
             terminal: false,
             stdout_terminal: false,
             answers: Vec::new(),
+            local_auth: VecDeque::new(),
             env: vec![("CLAUDECODE".into(), "1".into())],
             code_tx: None,
         }
@@ -210,6 +212,7 @@ impl Run {
             terminal: true,
             stdout_terminal: false,
             answers,
+            local_auth: VecDeque::new(),
             env: Vec::new(),
             code_tx: None,
         }
@@ -266,6 +269,7 @@ struct TestHost<'d, N: Net> {
     terminal: bool,
     stdout_terminal: bool,
     env: Vec<(String, String)>,
+    local_auth: VecDeque<LocalAuthOutcome>,
 }
 
 impl<N: Net> Host for TestHost<'_, N> {
@@ -274,6 +278,12 @@ impl<N: Net> Host for TestHost<'_, N> {
 
     fn console(&mut self) -> &mut TestConsole {
         &mut self.console
+    }
+
+    fn local_confirm(&mut self, _reason: &str) -> LocalAuthOutcome {
+        self.local_auth.pop_front().unwrap_or_else(|| {
+            LocalAuthOutcome::Unavailable("no scripted local confirmation".into())
+        })
     }
 
     fn env_var(&self, key: &str) -> Option<OsString> {
@@ -393,6 +403,7 @@ impl<N: Net> Device<N> {
             terminal: run.terminal,
             stdout_terminal: run.stdout_terminal,
             env,
+            local_auth: run.local_auth,
         };
         let argv = std::iter::once("kc")
             .chain(args.iter().copied())
