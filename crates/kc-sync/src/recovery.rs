@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::{AckResult, ChangeId, Fp, Lineage, PeerId, Vid};
+use serde::{Deserialize, Serialize};
 
 /// Complete remote transaction intent, persisted before slots or keychain writes (§12.4).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -67,9 +67,13 @@ pub enum RemoteRecovery {
 
 /// Classifies a remote journal by fingerprint, with intended-value equality taking precedence (§12.4).
 pub fn recover_remote(record: &RemoteJournalRecord, current_fp: Fp) -> RemoteRecovery {
-    if current_fp == record.new_fp { RemoteRecovery::FinishFromStep4 }
-    else if current_fp == record.prev_fp { RemoteRecovery::Retry }
-    else { RemoteRecovery::Conflict }
+    if current_fp == record.new_fp {
+        RemoteRecovery::FinishFromStep4
+    } else if current_fp == record.prev_fp {
+        RemoteRecovery::Retry
+    } else {
+        RemoteRecovery::Conflict
+    }
 }
 
 /// Exactly the six local-journal recovery rows, in design-table order (§12.4).
@@ -90,12 +94,26 @@ pub enum LocalRecovery {
 }
 
 /// Classifies all six rows; `committed` means stored head equals the journal's new vid (§12.4).
-pub fn recover_local(prev_fp: Fp, new_fp: Fp, current_fp: Fp, committed: bool, snapshot_exists: bool) -> LocalRecovery {
+pub fn recover_local(
+    prev_fp: Fp,
+    new_fp: Fp,
+    current_fp: Fp,
+    committed: bool,
+    snapshot_exists: bool,
+) -> LocalRecovery {
     if current_fp == new_fp {
-        if committed { LocalRecovery::CleanJournal }
-        else if snapshot_exists { LocalRecovery::Commit }
-        else { LocalRecovery::RebuildSnapshotAndCommit }
-    } else if committed { LocalRecovery::KeepSnapshotAndScan }
-    else if current_fp == prev_fp { LocalRecovery::DiscardSnapshot }
-    else { LocalRecovery::DiscardSnapshotAndScan }
+        if committed {
+            LocalRecovery::CleanJournal
+        } else if snapshot_exists {
+            LocalRecovery::Commit
+        } else {
+            LocalRecovery::RebuildSnapshotAndCommit
+        }
+    } else if committed {
+        LocalRecovery::KeepSnapshotAndScan
+    } else if current_fp == prev_fp {
+        LocalRecovery::DiscardSnapshot
+    } else {
+        LocalRecovery::DiscardSnapshotAndScan
+    }
 }

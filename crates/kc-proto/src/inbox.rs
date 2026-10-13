@@ -408,7 +408,9 @@ pub enum Body {
 impl Body {
     fn validate(&self) -> Result<(), InboxError> {
         match self {
-            Self::Items(items) => payload::check_unique_names(items).map_err(InboxError::InvalidItems),
+            Self::Items(items) => {
+                payload::check_unique_names(items).map_err(InboxError::InvalidItems)
+            }
             Self::Sync(msg) => msg.validate(),
         }
     }

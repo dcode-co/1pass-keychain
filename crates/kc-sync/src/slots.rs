@@ -1,6 +1,6 @@
-use std::collections::BTreeMap;
-use serde::{Deserialize, Serialize};
 use crate::{AckResult, Decision, Fp, HoldReason};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// Slot priority in increasing order; checkpoints are never evicted (§12.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -38,28 +38,50 @@ pub struct SlotBudget {
 impl SlotBudget {
     /// Creates a budget of max(16, items × 4), saturating arithmetic (§12.3).
     pub fn new(items: usize) -> Self {
-        Self { capacity: items.saturating_mul(4).max(16), slots: BTreeMap::new(), pinned_snapshots: Default::default() }
+        Self {
+            capacity: items.saturating_mul(4).max(16),
+            slots: BTreeMap::new(),
+            pinned_snapshots: Default::default(),
+        }
     }
     /// Returns the configured total capacity (§12.3).
-    pub fn capacity(&self) -> usize { self.capacity }
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
     /// Returns the count of reserved slots (§12.3).
-    pub fn used(&self) -> usize { self.slots.len() }
+    pub fn used(&self) -> usize {
+        self.slots.len()
+    }
     /// Looks up a reservation without touching its value (§12.3).
-    pub fn kind(&self, name: &str) -> Option<SlotKind> { self.slots.get(name).copied() }
+    pub fn kind(&self, name: &str) -> Option<SlotKind> {
+        self.slots.get(name).copied()
+    }
 
     /// Reserves a slot; new Held and Proposal slots never evict at capacity (§12.3).
     pub fn reserve(&mut self, name: &str, kind: SlotKind) -> Reservation {
         if let Some(existing) = self.slots.get(name) {
-            return if *existing == kind { Reservation::Reserved { evicted: None } } else { Reservation::Refused };
+            return if *existing == kind {
+                Reservation::Reserved { evicted: None }
+            } else {
+                Reservation::Refused
+            };
         }
         let mut evicted = None;
         if self.slots.len() >= self.capacity {
-            if kind <= SlotKind::Held { return Reservation::Refused; }
-            evicted = self.slots.iter()
-                .filter(|(name, existing)| **existing < kind && !self.pinned_snapshots.contains(*name))
+            if kind <= SlotKind::Held {
+                return Reservation::Refused;
+            }
+            evicted = self
+                .slots
+                .iter()
+                .filter(|(name, existing)| {
+                    **existing < kind && !self.pinned_snapshots.contains(*name)
+                })
                 .min_by_key(|(name, existing)| (**existing, *name))
                 .map(|(name, _)| name.clone());
-            let Some(victim) = &evicted else { return Reservation::Refused; };
+            let Some(victim) = &evicted else {
+                return Reservation::Refused;
+            };
             self.slots.remove(victim);
         }
         self.slots.insert(name.into(), kind);
@@ -69,24 +91,36 @@ impl SlotBudget {
     /// Reserves an outbound snapshot pinned until all-target final ACK (§2.8, §12.3).
     pub fn reserve_snapshot(&mut self, name: &str) -> Reservation {
         let result = self.reserve(name, SlotKind::ConflictCandidate);
-        if matches!(result, Reservation::Reserved { .. }) { self.pinned_snapshots.insert(name.into()); }
+        if matches!(result, Reservation::Reserved { .. }) {
+            self.pinned_snapshots.insert(name.into());
+        }
         result
     }
 
     /// Releases resolved/rejected slots or finally acknowledged snapshots, never checkpoints (§12.3).
     pub fn release(&mut self, name: &str) -> bool {
-        if self.slots.get(name) == Some(&SlotKind::Checkpoint) { return false; }
+        if self.slots.get(name) == Some(&SlotKind::Checkpoint) {
+            return false;
+        }
         self.pinned_snapshots.remove(name);
         self.slots.remove(name).is_some()
     }
 
     /// Ensures a checkpoint before overwrite; fallback is held, then capacity deferral (§2.6, §12.3).
-    pub fn prepare_overwrite(&mut self, checkpoint_slot: &str, held_slot: &str) -> OverwriteCapacity {
+    pub fn prepare_overwrite(
+        &mut self,
+        checkpoint_slot: &str,
+        held_slot: &str,
+    ) -> OverwriteCapacity {
         match self.reserve(checkpoint_slot, SlotKind::Checkpoint) {
             Reservation::Reserved { evicted } => OverwriteCapacity::Ready { evicted },
             Reservation::Refused => match self.reserve(held_slot, SlotKind::Held) {
-                Reservation::Reserved { .. } => OverwriteCapacity::Held(Decision::held(HoldReason::OverLimit)),
-                Reservation::Refused => OverwriteCapacity::Deferred(Decision::unchanged(AckResult::DeferredCapacity)),
+                Reservation::Reserved { .. } => {
+                    OverwriteCapacity::Held(Decision::held(HoldReason::OverLimit))
+                }
+                Reservation::Refused => {
+                    OverwriteCapacity::Deferred(Decision::unchanged(AckResult::DeferredCapacity))
+                }
             },
         }
     }
@@ -108,13 +142,21 @@ pub enum OverwriteCapacity {
 
 /// Recovery baseline whose fingerprint cannot be replaced by remote overwrites (§2.6).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Checkpoint { fp: Option<Fp> }
+pub struct Checkpoint {
+    fp: Option<Fp>,
+}
 
 impl Checkpoint {
     /// Captures the original value only on the first remote overwrite (§2.6).
-    pub fn before_remote_overwrite(&mut self, current: Fp) -> Fp { *self.fp.get_or_insert(current) }
+    pub fn before_remote_overwrite(&mut self, current: Fp) -> Fp {
+        *self.fp.get_or_insert(current)
+    }
     /// Returns the retained fingerprint for caller-owned recovery storage (§2.6).
-    pub fn fingerprint(&self) -> Option<Fp> { self.fp }
+    pub fn fingerprint(&self) -> Option<Fp> {
+        self.fp
+    }
     /// Explicit human confirmation is the only way to replace a baseline (§2.6).
-    pub fn human_confirm(&mut self, current: Fp) { self.fp = Some(current); }
+    pub fn human_confirm(&mut self, current: Fp) {
+        self.fp = Some(current);
+    }
 }

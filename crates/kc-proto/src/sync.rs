@@ -61,10 +61,7 @@ pub struct ChangeId {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Op {
-    Put {
-        kind: ItemKind,
-        value: SecretBytes,
-    },
+    Put { kind: ItemKind, value: SecretBytes },
     Retire,
 }
 

@@ -16,9 +16,8 @@ pub(super) fn confirm(reason: &str) -> LocalAuthOutcome {
 fn outcome(result: UserConsentVerificationResult) -> LocalAuthOutcome {
     match result {
         UserConsentVerificationResult::Verified => LocalAuthOutcome::Confirmed,
-        UserConsentVerificationResult::Canceled | UserConsentVerificationResult::RetriesExhausted => {
-            LocalAuthOutcome::Denied
-        }
+        UserConsentVerificationResult::Canceled
+        | UserConsentVerificationResult::RetriesExhausted => LocalAuthOutcome::Denied,
         UserConsentVerificationResult::DeviceNotPresent => {
             LocalAuthOutcome::Unavailable("Windows Hello device not present".into())
         }
@@ -41,8 +40,14 @@ mod tests {
 
     #[test]
     fn only_verified_confirms() {
-        assert_eq!(outcome(UserConsentVerificationResult::Verified), LocalAuthOutcome::Confirmed);
-        for result in [UserConsentVerificationResult::Canceled, UserConsentVerificationResult::RetriesExhausted] {
+        assert_eq!(
+            outcome(UserConsentVerificationResult::Verified),
+            LocalAuthOutcome::Confirmed
+        );
+        for result in [
+            UserConsentVerificationResult::Canceled,
+            UserConsentVerificationResult::RetriesExhausted,
+        ] {
             assert_eq!(outcome(result), LocalAuthOutcome::Denied);
         }
         for result in [

@@ -9,7 +9,9 @@ pub(super) fn confirm(reason: &str) -> LocalAuthOutcome {
             Ok(time) => time,
             Err(error) => return LocalAuthOutcome::Unavailable(error.into()),
         },
-        Err(error) => return LocalAuthOutcome::Unavailable(format!("cannot read /proc/self/stat: {error}")),
+        Err(error) => {
+            return LocalAuthOutcome::Unavailable(format!("cannot read /proc/self/stat: {error}"));
+        }
     };
     // Do not enable pkcheck's internal terminal agent. Authentication belongs to
     // the session's OS agent, with no input inherited from kc's PTY.
@@ -24,10 +26,14 @@ pub(super) fn confirm(reason: &str) -> LocalAuthOutcome {
 fn command(reason: &str, pid: u32, start_time: u64) -> Command {
     let mut command = Command::new("pkcheck");
     command.args([
-        "--action-id", "org.freedesktop.policykit.exec",
-        "--process", &format!("{pid},{start_time}"),
+        "--action-id",
+        "org.freedesktop.policykit.exec",
+        "--process",
+        &format!("{pid},{start_time}"),
         "--allow-user-interaction",
-        "--detail", "polkit.message", reason,
+        "--detail",
+        "polkit.message",
+        reason,
     ]);
     command.stdin(std::process::Stdio::null());
     command
@@ -36,10 +42,15 @@ fn command(reason: &str, pid: u32, start_time: u64) -> Command {
 /// Field 22 follows the state (field 3) by 19 fields. `comm` (field 2) can
 /// contain whitespace and parentheses, so only the final ')' ends that field.
 fn process_start_time(stat: &str) -> Result<u64, &'static str> {
-    let (_, fields) = stat.rsplit_once(')').ok_or("/proc/self/stat has no comm terminator")?;
-    fields.split_whitespace().nth(19)
+    let (_, fields) = stat
+        .rsplit_once(')')
+        .ok_or("/proc/self/stat has no comm terminator")?;
+    fields
+        .split_whitespace()
+        .nth(19)
         .ok_or("/proc/self/stat has no start time")?
-        .parse().map_err(|_| "/proc/self/stat has an invalid start time")
+        .parse()
+        .map_err(|_| "/proc/self/stat has an invalid start time")
 }
 
 fn outcome(code: Option<i32>, stderr: &[u8]) -> LocalAuthOutcome {
@@ -49,7 +60,8 @@ fn outcome(code: Option<i32>, stderr: &[u8]) -> LocalAuthOutcome {
         // needed but no authentication agent could ask, which falls to Unavailable below.
         Some(1 | 3) => LocalAuthOutcome::Denied,
         _ => LocalAuthOutcome::Unavailable(format!(
-            "pkcheck failed (exit {code:?}): {}", String::from_utf8_lossy(stderr).trim()
+            "pkcheck failed (exit {code:?}): {}",
+            String::from_utf8_lossy(stderr).trim()
         )),
     }
 }
@@ -67,12 +79,20 @@ mod tests {
     fn reads_field_22() {
         assert_eq!(process_start_time(&stat("kc", "123456")), Ok(123456));
         assert_eq!(process_start_time(&stat("kc", "0")), Ok(0));
-        assert_eq!(process_start_time(&stat("kc", "18446744073709551615")), Ok(u64::MAX));
+        assert_eq!(
+            process_start_time(&stat("kc", "18446744073709551615")),
+            Ok(u64::MAX)
+        );
     }
 
     #[test]
     fn comm_can_contain_spaces_and_parentheses() {
-        for comm in ["kc local confirm", "kc (nested) name", "kc)) (a) b)", "kc\nname"] {
+        for comm in [
+            "kc local confirm",
+            "kc (nested) name",
+            "kc)) (a) b)",
+            "kc\nname",
+        ] {
             assert_eq!(process_start_time(&stat(comm, "123456")), Ok(123456));
         }
     }
@@ -90,12 +110,23 @@ mod tests {
     #[test]
     fn reason_is_one_argument_and_no_internal_agent_is_enabled() {
         let command = command("kc: allow 'this' $(action)?", 42, 123456);
-        let args: Vec<_> = command.get_args().map(|arg| arg.to_str().unwrap()).collect();
-        assert_eq!(args, [
-            "--action-id", "org.freedesktop.policykit.exec",
-            "--process", "42,123456", "--allow-user-interaction",
-            "--detail", "polkit.message", "kc: allow 'this' $(action)?",
-        ]);
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_str().unwrap())
+            .collect();
+        assert_eq!(
+            args,
+            [
+                "--action-id",
+                "org.freedesktop.policykit.exec",
+                "--process",
+                "42,123456",
+                "--allow-user-interaction",
+                "--detail",
+                "polkit.message",
+                "kc: allow 'this' $(action)?",
+            ]
+        );
     }
 
     #[test]

@@ -1,6 +1,6 @@
-use std::collections::{BTreeMap, BTreeSet};
-use serde::{Deserialize, Serialize};
 use crate::PeerId;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Rolling non-interactive overwrite and peer breaker window in seconds (§4).
 pub const WINDOW_SECS: i64 = 24 * 60 * 60;
@@ -26,7 +26,11 @@ pub enum LimitResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct Event { at: i64, name: String, op: RemoteOperation }
+struct Event {
+    at: i64,
+    name: String,
+    op: RemoteOperation,
+}
 
 /// Serializable deterministic limiter; caller supplies time and records only committed operations (§4).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -43,38 +47,75 @@ fn recent(at: i64, now: i64) -> bool {
 
 impl Limiter {
     /// Checks the proposed operation and latches a breaker before crossing a threshold (§4).
-    pub fn check(&mut self, peer: &PeerId, name: &str, op: RemoteOperation,
-        now: i64, sync_set_size: usize, interactive: bool) -> LimitResult
-    {
-        if self.tripped.contains(peer) { return LimitResult::PeerTripped; }
+    pub fn check(
+        &mut self,
+        peer: &PeerId,
+        name: &str,
+        op: RemoteOperation,
+        now: i64,
+        sync_set_size: usize,
+        interactive: bool,
+    ) -> LimitResult {
+        if self.tripped.contains(peer) {
+            return LimitResult::PeerTripped;
+        }
         self.prune(now);
         let events = self.events.get(peer).map(Vec::as_slice).unwrap_or_default();
-        let overwrites = events.iter().filter(|e| e.op == RemoteOperation::Overwrite).count()
+        let overwrites = events
+            .iter()
+            .filter(|e| e.op == RemoteOperation::Overwrite)
+            .count()
             + usize::from(op == RemoteOperation::Overwrite);
-        let retires = events.iter().filter(|e| e.op == RemoteOperation::Retire).count()
+        let retires = events
+            .iter()
+            .filter(|e| e.op == RemoteOperation::Retire)
+            .count()
             + usize::from(op == RemoteOperation::Retire);
-        let affected: BTreeSet<&str> = events.iter().map(|e| e.name.as_str()).chain([name]).collect();
-        if overwrites > 5 || retires > 3
+        let affected: BTreeSet<&str> = events
+            .iter()
+            .map(|e| e.name.as_str())
+            .chain([name])
+            .collect();
+        if overwrites > 5
+            || retires > 3
             || (sync_set_size >= 8 && affected.len() > sync_set_size / 4)
         {
             self.tripped.insert(peer.clone());
             return LimitResult::PeerTripped;
         }
-        if op == RemoteOperation::Overwrite && !interactive
+        if op == RemoteOperation::Overwrite
+            && !interactive
             && self.items.get(name).is_some_and(|at| recent(*at, now))
-        { return LimitResult::ItemLimited; }
+        {
+            return LimitResult::ItemLimited;
+        }
         LimitResult::Allowed
     }
 
     /// Records an actually committed operation; interactive writes bypass only the item cap (§4).
-    pub fn record(&mut self, peer: &PeerId, name: &str, op: RemoteOperation, now: i64, interactive: bool) {
+    pub fn record(
+        &mut self,
+        peer: &PeerId,
+        name: &str,
+        op: RemoteOperation,
+        now: i64,
+        interactive: bool,
+    ) {
         self.prune(now);
-        if op == RemoteOperation::Overwrite && !interactive { self.items.insert(name.into(), now); }
-        self.events.entry(peer.clone()).or_default().push(Event { at: now, name: name.into(), op });
+        if op == RemoteOperation::Overwrite && !interactive {
+            self.items.insert(name.into(), now);
+        }
+        self.events.entry(peer.clone()).or_default().push(Event {
+            at: now,
+            name: name.into(),
+            op,
+        });
     }
 
     /// Tests the sticky peer breaker for any incoming message, including offers (§4).
-    pub fn is_tripped(&self, peer: &PeerId) -> bool { self.tripped.contains(peer) }
+    pub fn is_tripped(&self, peer: &PeerId) -> bool {
+        self.tripped.contains(peer)
+    }
 
     /// Human reset clears this peer's breaker history but preserves per-item overwrite limits (§4).
     pub fn human_reset(&mut self, peer: &PeerId) {
@@ -85,6 +126,9 @@ impl Limiter {
     /// Drops expired counters without clearing sticky breakers (§4).
     pub fn prune(&mut self, now: i64) {
         self.items.retain(|_, at| recent(*at, now));
-        self.events.retain(|_, events| { events.retain(|e| recent(e.at, now)); !events.is_empty() });
+        self.events.retain(|_, events| {
+            events.retain(|e| recent(e.at, now));
+            !events.is_empty()
+        });
     }
 }

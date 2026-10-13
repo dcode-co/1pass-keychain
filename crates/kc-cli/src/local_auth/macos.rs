@@ -29,8 +29,13 @@ pub(super) fn confirm(reason: &str) -> LocalAuthOutcome {
             // SAFETY: LocalAuthentication supplies nil or a valid NSError for
             // the duration of this callback. Only owned Rust data leaves it.
             match unsafe { error.as_ref() } {
-                Some(error) => failure(LAError(error.code()), error.localizedDescription().to_string()),
-                None => LocalAuthOutcome::Unavailable("LocalAuthentication returned no error details".into()),
+                Some(error) => failure(
+                    LAError(error.code()),
+                    error.localizedDescription().to_string(),
+                ),
+                None => LocalAuthOutcome::Unavailable(
+                    "LocalAuthentication returned no error details".into(),
+                ),
             }
         };
         // A dropped receiver must not unwind across the Objective-C callback.
@@ -60,7 +65,11 @@ mod tests {
 
     #[test]
     fn cancelled_or_failed_authentication_is_denied() {
-        for code in [LAError::UserCancel, LAError::UserFallback, LAError::AuthenticationFailed] {
+        for code in [
+            LAError::UserCancel,
+            LAError::UserFallback,
+            LAError::AuthenticationFailed,
+        ] {
             assert_eq!(failure(code, "denied".into()), LocalAuthOutcome::Denied);
         }
     }
@@ -75,7 +84,10 @@ mod tests {
             LAError::InvalidContext,
             LAError(-999),
         ] {
-            assert_eq!(failure(code, "OS error".into()), LocalAuthOutcome::Unavailable("OS error".into()));
+            assert_eq!(
+                failure(code, "OS error".into()),
+                LocalAuthOutcome::Unavailable("OS error".into())
+            );
         }
     }
 }

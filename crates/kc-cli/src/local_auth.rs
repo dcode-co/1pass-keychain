@@ -26,13 +26,21 @@ pub fn confirm(reason: &str) -> LocalAuthOutcome {
         return LocalAuthOutcome::Unavailable("local confirmation needs a reason".into());
     }
     #[cfg(target_os = "macos")]
-    { macos::confirm(reason) }
+    {
+        macos::confirm(reason)
+    }
     #[cfg(windows)]
-    { windows::confirm(reason) }
+    {
+        windows::confirm(reason)
+    }
     #[cfg(target_os = "linux")]
-    { linux::confirm(reason) }
+    {
+        linux::confirm(reason)
+    }
     #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
-    { LocalAuthOutcome::Unavailable("local confirmation is unsupported on this platform".into()) }
+    {
+        LocalAuthOutcome::Unavailable("local confirmation is unsupported on this platform".into())
+    }
 }
 
 #[cfg(test)]
