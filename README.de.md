@@ -143,6 +143,30 @@ Wann `kc device rotate` sinnvoll ist, steht in [docs/SECURITY.md](docs/SECURITY.
 | `kc pair`, `kc peers`, `kc inbox`, `kc device` | gemerkte Geräte |
 | `kc doctor` | prüft den Schlüsselbund, das Relay und die Konfiguration |
 
+## Fehlerbehebung
+
+- **`kc doctor` meldet `device FAIL: the OS keychain refused access`** (macOS).
+  Der Schlüsselbund fragt nach, bevor ein anderes kc-Binary Einträge liest, die ein
+  anderes gespeichert hat, zum Beispiel nach einem Wechsel zwischen Homebrew, npm und
+  einem Build aus dem Quellcode. Führe den fehlschlagenden Befehl (oder `kc doctor`)
+  einmal im Terminal aus und wähle **Immer erlauben**; `kc --help` und
+  `kc --version` greifen nicht auf den Schlüsselbund zu. Skripte und Agenten können diese Abfrage nicht
+  beantworten, also erledige das, bevor sie laufen.
+- **`kc: … is missing. Reinstall 1pass-keychain with optional dependencies
+  enabled`** (npm oder Bun). Das Binary steckt in einem plattformspezifischen
+  Paket, das npm als optionale Abhängigkeit installiert: `1pass-keychain-darwin-arm64`,
+  `-darwin-x64`, `-linux-arm64`, `-linux-x64` und `@1pass/keychain-win32-x64`
+  für Windows. Bei einer Installation mit `--omit=optional` (oder `--no-optional`)
+  fehlt es; installiere ohne diese Option neu.
+- **Windows: `no Credential Manager logon session`.** In einer SSH-Sitzung, die sich
+  mit einem Schlüssel angemeldet hat, gibt es keine Anmeldeinformationsverwaltung. Führe kc
+  in einer Desktop-Sitzung aus oder verbinde dich per SSH mit einem Passwort.
+- **Linux: Der Schlüsselbund ist nicht verfügbar.** Starte einen Secret Service (zum Beispiel
+  gnome-keyring) und entsperre ihn; `kc doctor` sagt, welcher Teil fehlt.
+- **Meldungen in der falschen Sprache.** Setze `KC_LANG` (siehe Sprachen unten).
+  Wenn weder stdout noch stderr ein Terminal ist (Skripte, Agenten), schreibt kc
+  Englisch, sofern `KC_LANG` nicht gesetzt ist.
+
 ## Sprachen
 
 Die Meldungen von kc und `kc --help` gibt es auf English, 한국어, 日本語, 简体中文, 繁體中文,
@@ -169,6 +193,9 @@ Noch nicht auf echten Rechnern getestet: Sendungen mit Einmalcode von Linux oder
 Das PAKE-Crate wurde noch nicht unabhängig geprüft. Das Protokoll steht in
 [docs/PROTOCOL.md](docs/PROTOCOL.md), das Bedrohungsmodell in
 [docs/SECURITY.md](docs/SECURITY.md).
+
+Für Maintainer: Release-Schritte und bekannte Fallstricke stehen in
+[docs/RELEASING.md](docs/RELEASING.md).
 
 ## Lizenz
 

@@ -142,6 +142,25 @@ desktop$ kc inbox                            # 儲存收到的內容（最多保
 | `kc pair`, `kc peers`, `kc inbox`, `kc device` | 已記住的裝置 |
 | `kc doctor` | 檢查鑰匙圈、中繼伺服器與設定 |
 
+## 疑難排解
+
+- **`kc doctor` 顯示 `device FAIL: the OS keychain refused access`**（macOS）。
+  當另一個 kc 執行檔讀取別的 kc 執行檔儲存的項目時，鑰匙圈會先詢問，
+  例如在 Homebrew、npm 與原始碼建置之間切換之後。在終端機中執行一次失敗的指令
+  （或 `kc doctor`）並選擇**永遠允許**；`kc --help` 與 `kc --version` 不會存取鑰匙圈。
+  指令碼與代理程式無法回應該提示，所以請在它們執行之前完成。
+- **`kc: … is missing. Reinstall 1pass-keychain with optional dependencies
+  enabled`**（npm 或 Bun）。執行檔位於 npm 以選用相依套件安裝的
+  各平台套件中：`1pass-keychain-darwin-arm64`、`-darwin-x64`、`-linux-arm64`、
+  `-linux-x64`，Windows 為 `@1pass/keychain-win32-x64`。用 `--omit=optional`
+  （或 `--no-optional`）安裝會漏掉它；請拿掉該選項重新安裝。
+- **Windows：`no Credential Manager logon session`。** 以金鑰登入的 SSH 工作階段中
+  沒有認證管理員。請在桌面工作階段中執行 kc，或以密碼透過 SSH 連線。
+- **Linux：鑰匙圈無法使用。** 啟動 Secret Service（例如 gnome-keyring）並解鎖；
+  `kc doctor` 會指出缺少哪個部分。
+- **訊息語言不對。** 設定 `KC_LANG`（見下方「語言」）。當 stdout 與 stderr
+  都不是終端機時（指令碼、代理程式），除非設定了 `KC_LANG`，否則 kc 一律輸出英文。
+
 ## 語言
 
 kc 的訊息與 `kc --help` 支援 English、한국어、日本語、简体中文、繁體中文、
@@ -168,6 +187,9 @@ $ KC_LANG=ko kc doctor
 PAKE crate 尚未經過獨立稽核。協定見
 [docs/PROTOCOL.md](docs/PROTOCOL.md)，威脅模型見
 [docs/SECURITY.md](docs/SECURITY.md)。
+
+維護者：發布步驟與已知陷阱見
+[docs/RELEASING.md](docs/RELEASING.md)。
 
 ## 授權
 

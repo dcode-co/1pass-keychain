@@ -143,6 +143,29 @@ lost. See [docs/SECURITY.md](docs/SECURITY.md) for when to use `kc device rotate
 | `kc pair`, `kc peers`, `kc inbox`, `kc device` | remembered devices |
 | `kc doctor` | check the keychain, the relay and the configuration |
 
+## Troubleshooting
+
+- **`kc doctor` shows `device FAIL: the OS keychain refused access`** (macOS).
+  The keychain asks before a different kc binary reads items another one
+  stored, for example after switching between Homebrew, npm and a source
+  build. Run the failing command (or `kc doctor`) in a terminal once and choose
+  **Always Allow**; `kc --help` and `kc --version` don't touch the keychain.
+  Scripts and agents can't answer that prompt, so do it before they run.
+- **`kc: … is missing. Reinstall 1pass-keychain with optional dependencies
+  enabled`** (npm or Bun). The binary comes in a per-platform package that
+  npm installs as an optional dependency: `1pass-keychain-darwin-arm64`,
+  `-darwin-x64`, `-linux-arm64`, `-linux-x64`, and `@1pass/keychain-win32-x64`
+  for Windows. Installing with `--omit=optional` (or `--no-optional`) leaves
+  it out; reinstall without that flag.
+- **Windows: `no Credential Manager logon session`.** Credential Manager
+  doesn't exist in an SSH session that logged in with a key. Run kc from a
+  desktop session, or connect over SSH with a password.
+- **Linux: the keychain is unavailable.** Start a Secret Service (for example
+  gnome-keyring) and unlock it; `kc doctor` says which part is missing.
+- **Messages in the wrong language.** Set `KC_LANG` (see Languages below).
+  When neither stdout nor stderr is a terminal (scripts, agents), kc writes
+  English unless `KC_LANG` is set.
+
 ## Languages
 
 kc's messages and `kc --help` come in English, 한국어, 日本語, 简体中文, 繁體中文,
@@ -169,6 +192,9 @@ Not yet tested on real machines: one-time-code sends from Linux or Windows.
 The PAKE crate has not had an independent audit. The protocol is in
 [docs/PROTOCOL.md](docs/PROTOCOL.md) and the threat model in
 [docs/SECURITY.md](docs/SECURITY.md).
+
+Maintainers: releasing steps and known pitfalls are in
+[docs/RELEASING.md](docs/RELEASING.md).
 
 ## License
 
