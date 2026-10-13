@@ -40,6 +40,7 @@ pub mod relay;
 mod rng;
 pub mod secret;
 pub mod session;
+pub mod sync;
 pub mod words;
 
 #[cfg(any(test, feature = "test-util"))]

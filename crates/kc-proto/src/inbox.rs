@@ -26,9 +26,13 @@ use crate::device::{DeviceKem, DeviceKeyPair, DevicePublicKey, Fingerprint};
 use crate::pad;
 use crate::payload::{self, Item, PayloadError};
 use crate::rng;
+use crate::sync::SyncMsg;
 
 /// `InboxEnvelope.v` and `InboxPlain.v`.
 pub const VERSION: u8 = 1;
+/// The sync-capable inbox format.
+pub const VERSION_V2: u8 = 2;
+pub const INFO_PREFIX_V2: &[u8] = b"kc2 inbox";
 /// `InboxEnvelope.suite`: DHKEM(X25519, HKDF-SHA256) + HKDF-SHA256 + ChaCha20-Poly1305.
 pub const SUITE: u16 = 1;
 pub const INFO_PREFIX: &[u8] = b"kc1 inbox";
@@ -190,8 +194,12 @@ fn header_aad(v: u8, suite: u16, sender_fp: &Fingerprint, recipient_fp: &Fingerp
 }
 
 fn info(sender_fp: &Fingerprint, recipient_fp: &Fingerprint) -> Vec<u8> {
-    let mut info = Vec::with_capacity(INFO_PREFIX.len() + 64);
-    info.extend_from_slice(INFO_PREFIX);
+    info_with_prefix(INFO_PREFIX, sender_fp, recipient_fp)
+}
+
+fn info_with_prefix(prefix: &[u8], sender_fp: &Fingerprint, recipient_fp: &Fingerprint) -> Vec<u8> {
+    let mut info = Vec::with_capacity(prefix.len() + 64);
+    info.extend_from_slice(prefix);
     info.extend_from_slice(sender_fp.as_bytes());
     info.extend_from_slice(recipient_fp.as_bytes());
     info
@@ -389,6 +397,230 @@ pub fn open(
         items: plain.items,
     })
 }
+
+/// v2 content. Variant order is part of the wire contract.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Body {
+    Items(Vec<Item>),
+    Sync(SyncMsg),
+}
+
+impl Body {
+    fn validate(&self) -> Result<(), InboxError> {
+        match self {
+            Self::Items(items) => payload::check_unique_names(items).map_err(InboxError::InvalidItems),
+            Self::Sync(msg) => msg.validate(),
+        }
+    }
+}
+
+/// The encrypted v2 plaintext. Field order is the postcard wire order.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InboxPlain2 {
+    pub v: u8,
+    pub msg_id: MessageId,
+    pub sender_fp: Fingerprint,
+    pub recipient_fp: Fingerprint,
+    pub created_at: i64,
+    pub expires_at: i64,
+    pub body: Body,
+}
+
+#[derive(Serialize)]
+struct InboxPlain2Ref<'a> {
+    v: u8,
+    msg_id: MessageId,
+    sender_fp: Fingerprint,
+    recipient_fp: Fingerprint,
+    created_at: i64,
+    expires_at: i64,
+    body: &'a Body,
+}
+
+/// Seals a v2 body with the same TTL and time rules as [`seal`].
+pub fn seal_v2(
+    sender: &DeviceKeyPair,
+    recipient: &DevicePublicKey,
+    body: &Body,
+    ttl: Duration,
+    now: i64,
+) -> Result<SealedMessage, InboxError> {
+    seal_v2_with_rng(
+        sender,
+        recipient,
+        body,
+        ttl,
+        now,
+        MessageId(rng::array()),
+        &mut hpke::rand_core::UnwrapErr(getrandom::SysRng),
+    )
+}
+
+// The production path and golden vectors share this constructor. Only tests
+// supply fixed message ids and ephemeral randomness; callers cannot do so.
+fn seal_v2_with_rng(
+    sender: &DeviceKeyPair,
+    recipient: &DevicePublicKey,
+    body: &Body,
+    ttl: Duration,
+    now: i64,
+    msg_id: MessageId,
+    csprng: &mut impl hpke::rand_core::CryptoRng,
+) -> Result<SealedMessage, InboxError> {
+    let ttl = i64::try_from(ttl.as_secs()).map_err(|_| InboxError::InvalidTtl)?;
+    if !(1..=MAX_LIFETIME_SECS).contains(&ttl) {
+        return Err(InboxError::InvalidTtl);
+    }
+    let expires_at = now.checked_add(ttl).ok_or(InboxError::InvalidTtl)?;
+    body.validate()?;
+    let sender_fp = sender.fingerprint();
+    let recipient_fp = recipient.fingerprint();
+    let plain = InboxPlain2Ref {
+        v: VERSION_V2,
+        msg_id,
+        sender_fp,
+        recipient_fp,
+        created_at: now,
+        expires_at,
+        body,
+    };
+    let mut buf = pad::encode(&plain, &[], TAG_LEN).map_err(|_| InboxError::Seal)?;
+    let mode = OpModeS::Auth((sender.kem_private().clone(), sender.public().kem_public()));
+    let (enc, tag) = hpke::single_shot_seal_inout_detached_with_rng::<Aead, HkdfSha256, DeviceKem>(
+        &mode,
+        &recipient.kem_public(),
+        &info_with_prefix(INFO_PREFIX_V2, &sender_fp, &recipient_fp),
+        (&mut buf[..]).into(),
+        &header_aad(VERSION_V2, SUITE, &sender_fp, &recipient_fp),
+        csprng,
+    )
+    .map_err(|_| InboxError::Seal)?;
+    buf.extend_from_slice(&tag.to_bytes());
+    let envelope = InboxEnvelope {
+        v: VERSION_V2,
+        suite: SUITE,
+        sender_fp,
+        recipient_fp,
+        enc: enc.to_bytes().into(),
+        ct: std::mem::take(&mut *buf),
+    };
+    let body = envelope.encode();
+    if body.len() > MAX_MESSAGE_BYTES {
+        return Err(InboxError::TooLarge);
+    }
+    Ok(SealedMessage {
+        body,
+        msg_id,
+        created_at: now,
+        expires_at,
+    })
+}
+
+/// A v1 or v2 message that passed every check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenedAny {
+    pub msg_id: MessageId,
+    pub sender_fp: Fingerprint,
+    pub created_at: i64,
+    pub expires_at: i64,
+    pub body: Body,
+}
+
+impl OpenedAny {
+    /// Keep `msg_id` in the seen-set at least until this time (Unix seconds).
+    pub fn keep_seen_until(&self) -> i64 {
+        self.expires_at.saturating_add(CLOCK_SKEW_SECS)
+    }
+}
+
+/// Opens either inbox version; v1 items are returned as [`Body::Items`].
+/// Arguments have the same meaning as in [`open`].
+pub fn open_any(
+    body: &[u8],
+    own_keys: &[&DeviceKeyPair],
+    peer_key: impl Fn(&Fingerprint) -> Option<DevicePublicKey>,
+    seen: impl Fn(&MessageId) -> bool,
+    now: i64,
+) -> Result<OpenedAny, InboxError> {
+    if body.len() > MAX_MESSAGE_BYTES {
+        return Err(InboxError::TooLarge);
+    }
+    let envelope = InboxEnvelope::decode(body)?;
+    if envelope.v == VERSION {
+        let opened = open(body, own_keys, peer_key, seen, now)?;
+        return Ok(OpenedAny {
+            msg_id: opened.msg_id,
+            sender_fp: opened.sender_fp,
+            created_at: opened.created_at,
+            expires_at: opened.expires_at,
+            body: Body::Items(opened.items),
+        });
+    }
+    if envelope.v != VERSION_V2 {
+        return Err(InboxError::UnsupportedVersion(envelope.v));
+    }
+    if envelope.suite != SUITE {
+        return Err(InboxError::UnsupportedSuite(envelope.suite));
+    }
+    let own = own_keys
+        .iter()
+        .find(|k| k.fingerprint() == envelope.recipient_fp)
+        .ok_or(InboxError::WrongRecipient)?;
+    let sender_pk = peer_key(&envelope.sender_fp)
+        .filter(|pk| pk.fingerprint() == envelope.sender_fp)
+        .ok_or(InboxError::UnknownSender)?;
+    let tag_at = envelope
+        .ct
+        .len()
+        .checked_sub(TAG_LEN)
+        .ok_or(InboxError::Malformed)?;
+    let (ciphertext, tag) = envelope.ct.split_at(tag_at);
+    let tag = AeadTag::<Aead>::from_bytes(tag).map_err(|_| InboxError::Malformed)?;
+    let enc = EncappedKey::from_bytes(&envelope.enc).map_err(|_| InboxError::Malformed)?;
+    let mut buf = Zeroizing::new(ciphertext.to_vec());
+    hpke::single_shot_open_inout_detached::<Aead, HkdfSha256, DeviceKem>(
+        &OpModeR::Auth(sender_pk.kem_public()),
+        own.kem_private(),
+        &enc,
+        &info_with_prefix(INFO_PREFIX_V2, &envelope.sender_fp, &envelope.recipient_fp),
+        (&mut buf[..]).into(),
+        &envelope.aad(),
+        &tag,
+    )
+    .map_err(|_| InboxError::DecryptFailed)?;
+    let plain: InboxPlain2 = pad::decode(&buf).map_err(|_| InboxError::Malformed)?;
+    if plain.v != envelope.v {
+        return Err(InboxError::UnsupportedVersion(plain.v));
+    }
+    if plain.sender_fp != envelope.sender_fp || plain.recipient_fp != envelope.recipient_fp {
+        return Err(InboxError::FingerprintMismatch);
+    }
+    let lifetime = plain.expires_at.checked_sub(plain.created_at);
+    if !lifetime.is_some_and(|l| (0..=MAX_LIFETIME_SECS).contains(&l)) {
+        return Err(InboxError::BadLifetime);
+    }
+    if now > plain.expires_at.saturating_add(CLOCK_SKEW_SECS) {
+        return Err(InboxError::Expired);
+    }
+    if plain.created_at > now.saturating_add(CLOCK_SKEW_SECS) {
+        return Err(InboxError::NotYetValid);
+    }
+    if seen(&plain.msg_id) {
+        return Err(InboxError::Replay);
+    }
+    plain.body.validate().map_err(|_| InboxError::Malformed)?;
+    Ok(OpenedAny {
+        msg_id: plain.msg_id,
+        sender_fp: plain.sender_fp,
+        created_at: plain.created_at,
+        expires_at: plain.expires_at,
+        body: plain.body,
+    })
+}
+
+#[cfg(test)]
+#[path = "../tests/inbox_v2/mod.rs"]
+mod v2_tests;
 
 /// The current time in Unix seconds.
 pub fn unix_now() -> i64 {
