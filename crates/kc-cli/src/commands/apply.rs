@@ -251,10 +251,10 @@ fn apply_one<H: Host>(
     if value.len() > MAX_VALUE_LEN {
         return Ok(ItemStatus::Rejected(REJECT_TOO_LARGE));
     }
-    if conflicts != Conflicts::Policy(ConflictPolicy::Rename) {
-        if let Some(status) = crate::sync::legacy(ctx, item, from_device)? {
-            return Ok(status);
-        }
+    if conflicts != Conflicts::Policy(ConflictPolicy::Rename)
+        && let Some(status) = crate::sync::legacy(ctx, item, from_device)?
+    {
+        return Ok(status);
     }
     let policy = match conflicts {
         Conflicts::Policy(policy) => policy,

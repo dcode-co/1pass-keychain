@@ -99,10 +99,10 @@ fn fingerprint<H: Host>(ctx: &Ctx<'_, H>, name: &str, kind: ItemKind, value: &[u
     mac.update(value);
     Ok(Fp(mac.finalize().into_bytes().into()))
 }
-fn current<H: Host>(
-    ctx: &Ctx<'_, H>,
-    name: &str,
-) -> Result<Option<(Zeroizing<Vec<u8>>, ItemKind, Fp)>> {
+/// An item's current value, kind and fingerprint.
+type Current = (Zeroizing<Vec<u8>>, ItemKind, Fp);
+
+fn current<H: Host>(ctx: &Ctx<'_, H>, name: &str) -> Result<Option<Current>> {
     let Some(value) = ctx.store.get(name)? else {
         return Ok(None);
     };

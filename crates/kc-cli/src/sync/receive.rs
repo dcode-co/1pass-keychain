@@ -321,14 +321,13 @@ fn change_received<H: Host>(
     // An accepted Offer has no parent field. Bind its first explicit parent assertion
     // only when the fingerprint still matches the immutable offered value.
     let unbound = format!("{}:{}", name, vid_key(c.new_vid));
-    if s.unbound.contains(&unbound) {
-        if let Some(rec) = state.known.get_mut(&map::vid(c.new_vid)) {
-            if Some(rec.fp) == fp {
-                rec.parents = c.parents.iter().copied().map(map::vid).collect();
-                private_put(ctx, &record_slot(name, c.new_vid), rec)?;
-                s.unbound.remove(&unbound);
-            }
-        }
+    if s.unbound.contains(&unbound)
+        && let Some(rec) = state.known.get_mut(&map::vid(c.new_vid))
+        && Some(rec.fp) == fp
+    {
+        rec.parents = c.parents.iter().copied().map(map::vid).collect();
+        private_put(ctx, &record_slot(name, c.new_vid), rec)?;
+        s.unbound.remove(&unbound);
     }
     let incoming = Incoming {
         generation: c.generation,
@@ -413,10 +412,10 @@ fn change_received<H: Host>(
             write_value: false,
             ..
         } => {
-            if let Some(fp) = fp {
-                if !remember(ctx, name, c.new_vid, fp, &c.parents)? {
-                    return Err(state_error());
-                }
+            if let Some(fp) = fp
+                && !remember(ctx, name, c.new_vid, fp, &c.parents)?
+            {
+                return Err(state_error());
             }
             let item = s.items.get_mut(name).unwrap();
             item.head = map::wire_vid(head);
@@ -493,6 +492,7 @@ pub(super) fn preserve_mine<H: Host>(
     }
     Ok(())
 }
+#[allow(clippy::too_many_arguments)]
 pub(super) fn store_candidate<H: Host>(
     ctx: &Ctx<'_, H>,
     s: &mut State,
@@ -577,15 +577,16 @@ pub(super) fn store_candidate<H: Host>(
             return Ok(false);
         }
     }
-    if !retire && !invalid_binding {
-        if let Some(item) = s.items.get_mut(&v.name) {
-            if !item.known.contains(&v.vid) {
-                item.known.push(v.vid);
-            }
-            while item.known.len() > 256 {
-                let index = item.known.iter().position(|vid| *vid != item.head).unwrap();
-                item.known.remove(index);
-            }
+    if !retire
+        && !invalid_binding
+        && let Some(item) = s.items.get_mut(&v.name)
+    {
+        if !item.known.contains(&v.vid) {
+            item.known.push(v.vid);
+        }
+        while item.known.len() > 256 {
+            let index = item.known.iter().position(|vid| *vid != item.head).unwrap();
+            item.known.remove(index);
         }
     }
     let key = v.slot.clone();

@@ -73,6 +73,7 @@ fn interrupted<H: Host>(ctx: &mut Ctx<'_, H>) -> Result<()> {
     }
     Ok(())
 }
+#[allow(clippy::too_many_arguments)]
 fn prepare_local<H: Host>(
     ctx: &Ctx<'_, H>,
     s: &mut State,
@@ -382,10 +383,10 @@ pub(super) fn accept<H: Host>(ctx: &mut Ctx<'_, H>, s: &mut State, c: &Candidate
     let expected: Fp = private_get(ctx, &c.base_record)?;
     let head = s.items.get(name).map(|i| i.head);
     if actual != expected || head != c.base_head || c.invalid_binding {
-        if c.invalid_binding {
-            if let Some(peer) = s.peers.get_mut(&c.peer) {
-                peer.quarantine.insert(name.into());
-            }
+        if c.invalid_binding
+            && let Some(peer) = s.peers.get_mut(&c.peer)
+        {
+            peer.quarantine.insert(name.into());
         }
         let key = c.version.slot.clone();
         if let Some(c) = s.candidates.get_mut(&key) {
@@ -408,10 +409,10 @@ pub(super) fn accept<H: Host>(ctx: &mut Ctx<'_, H>, s: &mut State, c: &Candidate
     } else {
         None
     };
-    if let Some(slot) = &checkpoint {
-        if !reserve(ctx, s, slot, SlotKind::Checkpoint, false)? {
-            return Ok(false);
-        }
+    if let Some(slot) = &checkpoint
+        && !reserve(ctx, s, slot, SlotKind::Checkpoint, false)?
+    {
+        return Ok(false);
     }
     let lineage =
         kc_sync::Lineage::new(c.version.lineage.iter().copied().chain(head).map(map::vid))
@@ -441,10 +442,10 @@ pub(super) fn accept<H: Host>(ctx: &mut Ctx<'_, H>, s: &mut State, c: &Candidate
             candidate: c.clone(),
         },
     )?;
-    if let (Some(slot), Some((old, old_kind, _))) = (&checkpoint, now) {
-        if ctx.store.get_internal(slot)?.is_none() {
-            put_blob(ctx, slot, old_kind, &old)?;
-        }
+    if let (Some(slot), Some((old, old_kind, _))) = (&checkpoint, now)
+        && ctx.store.get_internal(slot)?.is_none()
+    {
+        put_blob(ctx, slot, old_kind, &old)?;
     }
     ctx.store.set(
         name,

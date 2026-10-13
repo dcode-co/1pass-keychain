@@ -342,10 +342,10 @@ pub(crate) fn review<H: Host>(ctx: &mut Ctx<'_, H>) -> Result<i32> {
         if s.frozen {
             break;
         }
-        if let Some(current) = s.candidates.get(&c.version.slot).cloned() {
-            if current.category != CandidateKind::Conflict {
-                transaction::accept(ctx, &mut s, &current)?;
-            }
+        if let Some(current) = s.candidates.get(&c.version.slot).cloned()
+            && current.category != CandidateKind::Conflict
+        {
+            transaction::accept(ctx, &mut s, &current)?;
         }
     }
     s.cleanup(ctx)?;

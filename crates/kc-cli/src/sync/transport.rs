@@ -162,14 +162,13 @@ pub(crate) async fn flush<H: Host>(ctx: &mut Ctx<'_, H>, digest: bool) -> Result
         }
         let ids: Vec<_> = s.outbox.pending(&PeerId(id.clone())).cloned().collect();
         for change in &ids {
-            if let Some(latest) = s.latest_local.get(&change.name) {
-                if change.new_vid != map::vid(*latest)
-                    && ids
-                        .iter()
-                        .any(|id| id.name == change.name && id.new_vid == map::vid(*latest))
-                {
-                    continue;
-                }
+            if let Some(latest) = s.latest_local.get(&change.name)
+                && change.new_vid != map::vid(*latest)
+                && ids
+                    .iter()
+                    .any(|id| id.name == change.name && id.new_vid == map::vid(*latest))
+            {
+                continue;
             }
             if s.deferred.contains(&delivery_key(
                 &id,
@@ -309,7 +308,7 @@ pub(super) fn resend<H: Host>(
     Ok(())
 }
 pub(crate) async fn send_after_write<H: Host>(ctx: &mut Ctx<'_, H>) {
-    if let Err(_) = flush(ctx, false).await {
+    if flush(ctx, false).await.is_err() {
         crate::commands::say!(
             ctx,
             "{}",
