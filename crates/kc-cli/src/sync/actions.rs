@@ -195,7 +195,7 @@ pub(crate) fn status<H: Host>(ctx: &mut Ctx<'_, H>, json: bool) -> Result<i32> {
     }
     let output = serde_json::json!({"items": rows, "candidates": candidates, "peers": peers, "frozen":s.frozen,
         "capacity_blocked":s.capacity_blocked, "slots_used":s.slots.len(), "slot_capacity":SlotBudget::new(s.items.len()).capacity(),
-        "reconnect":s.reconnect, "notice":tr!("Only the device that created a change sends it; if it is lost, publish a new local change from a remaining copy.")});
+        "reconnect":s.reconnect, "delivery_failed":s.delivery_failed, "notice":tr!("Only the device that created a change sends it; if it is lost, publish a new local change from a remaining copy.")});
     if json {
         ctx.emit(
             format!(
@@ -229,7 +229,7 @@ pub(crate) fn status<H: Host>(ctx: &mut Ctx<'_, H>, json: bool) -> Result<i32> {
                 tr!("Sync storage is full; review pending items before retrying.")
             );
         }
-        if s.reconnect {
+        if s.reconnect || s.delivery_failed {
             crate::commands::say!(
                 ctx,
                 "{}",
@@ -295,30 +295,40 @@ pub(crate) fn review<H: Host>(ctx: &mut Ctx<'_, H>) -> Result<i32> {
         }
     }
     if !accepts.is_empty() || !rejects.is_empty() {
-        human(
-            ctx,
-            &tr!(
+        let names = names_summary(
+            &accepts
+                .iter()
+                .map(|c| c.version.name.clone())
+                .collect::<Vec<_>>(),
+        );
+        let devices = names_summary(
+            &accepts
+                .iter()
+                .map(|c| label(ctx, &c.peer))
+                .collect::<Result<Vec<_>>>()?,
+        );
+        let rejected = names_summary(
+            &rejects
+                .iter()
+                .map(|c| c.version.name.clone())
+                .collect::<Vec<_>>(),
+        );
+        // The OS dialog shows only the clauses that apply.
+        let reason = match (accepts.is_empty(), rejects.is_empty()) {
+            (false, false) => tr!(
                 "Accept {names} from {devices}; reject {rejected}",
-                names = names_summary(
-                    &accepts
-                        .iter()
-                        .map(|c| c.version.name.clone())
-                        .collect::<Vec<_>>()
-                ),
-                devices = names_summary(
-                    &accepts
-                        .iter()
-                        .map(|c| label(ctx, &c.peer))
-                        .collect::<Result<Vec<_>>>()?
-                ),
-                rejected = names_summary(
-                    &rejects
-                        .iter()
-                        .map(|c| c.version.name.clone())
-                        .collect::<Vec<_>>()
-                )
+                names = names,
+                devices = devices,
+                rejected = rejected
             ),
-        )?;
+            (false, true) => tr!(
+                "Accept {names} from {devices}",
+                names = names,
+                devices = devices
+            ),
+            _ => tr!("Reject {rejected}", rejected = rejected),
+        };
+        human(ctx, &reason)?;
     }
     let _items = ctx.state.lock_items(ctx.store.namespace())?;
     let _state = ctx.state.lock()?;
@@ -331,25 +341,7 @@ pub(crate) fn review<H: Host>(ctx: &mut Ctx<'_, H>) -> Result<i32> {
             let delivery = delivery_key(&c.peer, &c.version.name, c.generation, c.version.vid);
             if c.category == CandidateKind::Proposal {
                 s.rejected_offers.insert(delivery);
-                let record = record_slot(&c.version.name, c.version.vid);
-                let referenced = s
-                    .items
-                    .get(&c.version.name)
-                    .is_some_and(|i| i.head == c.version.vid)
-                    || s.versions
-                        .values()
-                        .any(|v| v.name == c.version.name && v.vid == c.version.vid)
-                    || s.candidates.values().any(|other| {
-                        other.version.name == c.version.name && other.version.vid == c.version.vid
-                    });
-                if !referenced {
-                    s.unbound
-                        .remove(&format!("{}:{}", c.version.name, vid_key(c.version.vid)));
-                    if let Some(item) = s.items.get_mut(&c.version.name) {
-                        item.known.retain(|vid| *vid != c.version.vid);
-                    }
-                    s.gc.insert(record);
-                }
+                forget_binding(&mut s, &c.version.name, c.version.vid);
             } else {
                 s.receipts.insert(
                     delivery,

@@ -490,6 +490,8 @@
 "kc sync peer add {label}" = "kc sync peer add {label}"
 "kc sync peer rm {label}" = "kc sync peer rm {label}"
 "Accept {names} from {devices}; reject {rejected}" = "{devices}의 {names} 수락; {rejected} 거절"
+"Accept {names} from {devices}" = "{devices}의 {names} 수락"
+"Reject {rejected}" = "{rejected} 거절"
 "Replace {name} with the value from {device}" = "{name}을(를) {device}의 값으로 교체"
 "Resolve {name}: keep {choice}" = "{name} 충돌 해결: {choice} 유지"
 "Restore {name} to its checkpoint" = "{name}을(를) 복구 기준점으로 복원"

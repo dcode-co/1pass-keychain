@@ -63,7 +63,7 @@ async fn deliver<H: Host>(
     message: SyncMsg,
 ) -> Result<()> {
     if let Err(error) = post(ctx, peer, message).await {
-        s.reconnect = true;
+        s.delivery_failed = true;
         s.save(&ctx.state)?;
         return Err(error);
     }
@@ -242,6 +242,8 @@ pub(crate) async fn flush<H: Host>(ctx: &mut Ctx<'_, H>, digest: bool) -> Result
             s.save(&ctx.state)?;
         }
     }
+    // Every peer was reached without an error, so nothing waits on a failed delivery.
+    s.delivery_failed = false;
     collect_snapshots(&mut s);
     s.cleanup(ctx)?;
     Ok(sent)

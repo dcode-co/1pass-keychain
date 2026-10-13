@@ -103,6 +103,9 @@ pub struct State {
     pub journal: Option<Journal>,
     pub capacity_blocked: bool,
     pub reconnect: bool,
+    /// The last delivery attempt failed; cleared by the next flush that reaches every peer.
+    #[serde(default)]
+    pub delivery_failed: bool,
     pub gc: BTreeSet<String>,
 }
 impl State {

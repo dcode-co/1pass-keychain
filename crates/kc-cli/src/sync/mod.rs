@@ -217,10 +217,13 @@ fn reserve<H: Host>(
                     .filter(|c| c.version.slot == victim)
                     .cloned()
                     .collect::<Vec<_>>();
+                s.candidates.retain(|_, c| c.version.slot != victim);
                 for c in evicted {
                     s.gc.insert(c.base_record);
+                    if c.category == CandidateKind::Proposal {
+                        forget_binding(s, &c.version.name, c.version.vid);
+                    }
                 }
-                s.candidates.retain(|_, c| c.version.slot != victim);
                 s.slots.remove(&victim);
                 s.gc.insert(victim);
             }
@@ -232,6 +235,24 @@ fn reserve<H: Host>(
         }
     }
 }
+/// Drops a dropped proposal's vid binding (`sync/fp/...` record, unbound entry, known vid)
+/// unless the head, a version or another candidate still refers to it.
+fn forget_binding(s: &mut State, name: &str, vid: Vid) {
+    let referenced = s.items.get(name).is_some_and(|i| i.head == vid)
+        || s.versions.values().any(|v| v.name == name && v.vid == vid)
+        || s.candidates
+            .values()
+            .any(|other| other.version.name == name && other.version.vid == vid);
+    if referenced {
+        return;
+    }
+    s.unbound.remove(&format!("{}:{}", name, vid_key(vid)));
+    if let Some(item) = s.items.get_mut(name) {
+        item.known.retain(|known| *known != vid);
+    }
+    s.gc.insert(record_slot(name, vid));
+}
+
 fn release(s: &mut State, slot: &str) {
     if s.slots.get(slot) != Some(&SlotKind::Checkpoint) {
         s.slots.remove(slot);
@@ -263,6 +284,7 @@ fn pending(s: &State) -> bool {
     s.frozen
         || s.capacity_blocked
         || s.reconnect
+        || s.delivery_failed
         || !s.candidates.is_empty()
         || !s.offers.is_empty()
         || s.items.values().any(|i| i.conflict)

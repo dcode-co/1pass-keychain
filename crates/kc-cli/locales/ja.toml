@@ -490,6 +490,8 @@
 "kc sync peer add {label}" = "kc sync peer add {label}"
 "kc sync peer rm {label}" = "kc sync peer rm {label}"
 "Accept {names} from {devices}; reject {rejected}" = "{devices}からの{names}を承認し、{rejected}を拒否"
+"Accept {names} from {devices}" = "{devices}からの{names}を承認"
+"Reject {rejected}" = "{rejected}を拒否"
 "Replace {name} with the value from {device}" = "{name}を{device}の値で置き換える"
 "Resolve {name}: keep {choice}" = "{name}を解決：{choice}を保持"
 "Restore {name} to its checkpoint" = "{name}をチェックポイントに戻す"

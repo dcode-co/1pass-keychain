@@ -490,6 +490,8 @@
 "kc sync peer add {label}" = "kc sync peer add {label}"
 "kc sync peer rm {label}" = "kc sync peer rm {label}"
 "Accept {names} from {devices}; reject {rejected}" = "Aceptar {names} de {devices}; rechazar {rejected}"
+"Accept {names} from {devices}" = "Aceptar {names} de {devices}"
+"Reject {rejected}" = "Rechazar {rejected}"
 "Replace {name} with the value from {device}" = "Reemplazar {name} por el valor de {device}"
 "Resolve {name}: keep {choice}" = "Resolver {name}: conservar {choice}"
 "Restore {name} to its checkpoint" = "Restaurar {name} a su punto de control"

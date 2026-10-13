@@ -1153,6 +1153,33 @@ async fn offer_during_conflict_is_a_candidate_and_review_cannot_discard_it() {
 }
 
 #[tokio::test]
+async fn offer_during_conflict_at_another_generation_stays_a_proposal() {
+    let (a, b, relay) = devices().await;
+    enroll(&a, &b).await;
+    a.set("KEY", b"fake-conflict-a").await;
+    b.set("KEY", b"fake-conflict-b").await;
+    pump(&a, &b).await;
+    let offered = Vid::random();
+    // Not stale (above the current generation) but not the registration in conflict either.
+    post(
+        &a,
+        &b,
+        &relay,
+        offer_message("KEY", offered, b"fake-conflict-offer", 2),
+    )
+    .await;
+    b.run(&["inbox"], Run::agent()).await.expect(8);
+    let s = state(&b);
+    let offer = s["candidates"]
+        .as_object()
+        .unwrap()
+        .values()
+        .find(|c| c["version"]["vid"] == serde_json::to_value(offered).unwrap())
+        .expect("the offer is kept");
+    assert_eq!(offer["category"], "proposal");
+}
+
+#[tokio::test]
 async fn sync_envelope_replay_is_skipped_by_seen_set() {
     let (a, b, relay) = devices().await;
     post(

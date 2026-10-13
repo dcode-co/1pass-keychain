@@ -490,6 +490,8 @@
 "kc sync peer add {label}" = "kc sync peer add {label}"
 "kc sync peer rm {label}" = "kc sync peer rm {label}"
 "Accept {names} from {devices}; reject {rejected}" = "接受来自{devices}的{names}；拒绝{rejected}"
+"Accept {names} from {devices}" = "接受来自{devices}的{names}"
+"Reject {rejected}" = "拒绝{rejected}"
 "Replace {name} with the value from {device}" = "用{device}的值替换{name}"
 "Resolve {name}: keep {choice}" = "解决{name}：保留{choice}"
 "Restore {name} to its checkpoint" = "将{name}恢复到检查点"

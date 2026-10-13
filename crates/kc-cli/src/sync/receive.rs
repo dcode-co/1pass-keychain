@@ -87,7 +87,11 @@ pub(crate) fn receive<H: Host>(ctx: &mut Ctx<'_, H>, peer: &str, message: &SyncM
                         },
                     );
                 } else if !s.candidates.contains_key(&version.slot) {
-                    let category = if s.items.get(name).is_some_and(|i| i.conflict) {
+                    let category = if s.items.get(name).is_some_and(|i| {
+                        i.conflict
+                            && i.scope.contains(peer)
+                            && *known_generation == s.generations.generation(name)
+                    }) {
                         CandidateKind::Conflict
                     } else {
                         CandidateKind::Proposal
