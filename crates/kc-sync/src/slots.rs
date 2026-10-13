@@ -105,6 +105,11 @@ impl SlotBudget {
         result
     }
 
+    /// Protects an in-use reservation from eviction during this reservation (§12.3).
+    pub fn pin(&mut self, name: &str) {
+        self.pinned_snapshots.insert(name.into());
+    }
+
     /// Releases resolved/rejected slots or finally acknowledged snapshots, never checkpoints (§12.3).
     pub fn release(&mut self, name: &str) -> bool {
         if self.slots.get(name) == Some(&SlotKind::Checkpoint) {

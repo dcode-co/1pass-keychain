@@ -333,6 +333,7 @@ pub(crate) fn review<H: Host>(ctx: &mut Ctx<'_, H>) -> Result<i32> {
         s.candidates
             .values()
             .filter(|c| c.category != CandidateKind::Conflict)
+            .filter(|c| !transaction::is_superseded(&s, c))
             .cloned()
             .collect::<Vec<_>>()
     };
@@ -419,7 +420,7 @@ pub(crate) fn review<H: Host>(ctx: &mut Ctx<'_, H>) -> Result<i32> {
             s.gc.insert(current.base_record);
             let delivery = delivery_key(&c.peer, &c.version.name, c.generation, c.version.vid);
             if c.category == CandidateKind::Proposal {
-                s.rejected_offers.insert(delivery);
+                reject_offer(&mut s, delivery, ctx.host.now());
                 forget_binding(&mut s, &c.version.name, c.version.vid);
             } else {
                 s.receipts.insert(
