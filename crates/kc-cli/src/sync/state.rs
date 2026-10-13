@@ -124,6 +124,28 @@ impl State {
             .map_err(|_| super::state_error())
     }
     pub fn cleanup<H: Host>(&mut self, ctx: &Ctx<'_, H>) -> Result<()> {
+        // A binding scheduled for deletion may have become live again in the same
+        // transaction (an accepted proposal evicted by its own checkpoint reservation).
+        let live: BTreeSet<String> = self
+            .items
+            .iter()
+            .flat_map(|(name, i)| {
+                std::iter::once(i.head)
+                    .chain(i.known.iter().copied())
+                    .map(move |vid| super::record_slot(name, vid))
+            })
+            .chain(
+                self.versions
+                    .values()
+                    .map(|v| super::record_slot(&v.name, v.vid)),
+            )
+            .chain(
+                self.candidates
+                    .values()
+                    .map(|c| super::record_slot(&c.version.name, c.version.vid)),
+            )
+            .collect();
+        self.gc.retain(|slot| !live.contains(slot));
         // Metadata is durable before deletion. A restart repeats only harmless deletes.
         self.save(&ctx.state)?;
         for slot in &self.gc {
