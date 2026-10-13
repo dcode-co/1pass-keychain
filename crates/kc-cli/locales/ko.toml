@@ -499,3 +499,4 @@
 "Confirm the current value of {name} as its checkpoint" = "{name}의 현재 값을 복구 기준점으로 확인"
 "Ignored a sync offer from disabled or blocked peer {peer}." = "비활성화되거나 차단된 기기 {peer}의 동기화 제안을 무시했습니다."
 "Sync item held; run `kc sync review`." = "동기화 항목을 보류했습니다. `kc sync review`를 실행하세요."
+"{name} is in conflict; settle it with `kc sync resolve {name}` first." = "{name} 항목이 충돌 중입니다. 먼저 `kc sync resolve {name}`로 해결하세요."

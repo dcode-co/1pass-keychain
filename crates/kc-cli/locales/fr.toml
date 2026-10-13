@@ -499,3 +499,4 @@
 "Confirm the current value of {name} as its checkpoint" = "Confirmer la valeur actuelle de {name} comme point de contrôle"
 "Ignored a sync offer from disabled or blocked peer {peer}." = "Offre de synchronisation ignorée : appareil {peer} désactivé ou bloqué."
 "Sync item held; run `kc sync review`." = "Élément de synchronisation en attente ; exécutez `kc sync review`."
+"{name} is in conflict; settle it with `kc sync resolve {name}` first." = "{name} est en conflit ; résolvez-le d’abord avec `kc sync resolve {name}`."

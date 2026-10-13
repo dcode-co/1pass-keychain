@@ -499,3 +499,4 @@
 "Confirm the current value of {name} as its checkpoint" = "确认{name}的当前值为检查点"
 "Ignored a sync offer from disabled or blocked peer {peer}." = "已忽略已禁用或被阻止的设备{peer}的同步提议。"
 "Sync item held; run `kc sync review`." = "同步项目已保留；请运行 `kc sync review`。"
+"{name} is in conflict; settle it with `kc sync resolve {name}` first." = "{name} 存在冲突，请先用 `kc sync resolve {name}` 解决。"

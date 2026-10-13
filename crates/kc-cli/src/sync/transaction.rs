@@ -420,6 +420,34 @@ pub(super) fn accept<H: Host>(ctx: &mut Ctx<'_, H>, s: &mut State, c: &Candidate
         s.save(&ctx.state)?;
         return Ok(false);
     }
+    // While the item is in conflict, only `kc sync resolve` may settle it: accepting a
+    // proposal or held change here would drop the other candidates (§2.4).
+    // A held resolve whose parents name the current head and every open candidate is the
+    // way out of the conflict, so it stays acceptable (§2.4).
+    let settles_conflict = |s: &State| {
+        let Some(item) = s.items.get(name) else {
+            return false;
+        };
+        c.version.parents.contains(&item.head)
+            && s.candidates
+                .values()
+                .filter(|o| o.version.name == *name && o.category == CandidateKind::Conflict)
+                .all(|o| c.version.parents.contains(&o.version.vid))
+    };
+    if c.category != CandidateKind::Conflict
+        && s.items.get(name).is_some_and(|i| i.conflict)
+        && !settles_conflict(s)
+    {
+        crate::commands::say!(
+            ctx,
+            "{}",
+            tr!(
+                "{name} is in conflict; settle it with `kc sync resolve {name}` first.",
+                name = name
+            )
+        );
+        return Ok(false);
+    }
     if c.retire {
         super::actions::remove(ctx, s, name)?;
         return Ok(true);

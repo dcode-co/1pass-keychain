@@ -1177,6 +1177,15 @@ async fn offer_during_conflict_at_another_generation_stays_a_proposal() {
         .find(|c| c["version"]["vid"] == serde_json::to_value(offered).unwrap())
         .expect("the offer is kept");
     assert_eq!(offer["category"], "proposal");
+    // Accepting it would end the conflict and drop the other candidates; resolve must.
+    let candidates = s["candidates"].clone();
+    b.run(&["sync", "review"], human(vec![Answer::Select(0)]))
+        .await
+        .expect(8);
+    let after = state(&b);
+    assert_eq!(after["candidates"], candidates);
+    assert_eq!(after["items"]["KEY"]["conflict"], true);
+    assert_eq!(b.value("KEY").unwrap(), b"fake-conflict-b");
 }
 
 #[tokio::test]
