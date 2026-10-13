@@ -323,7 +323,10 @@ fn scan_one<H: Host>(ctx: &mut Ctx<'_, H>, s: &mut State, name: &str) -> Result<
         Ok(value) => value,
         Err(error) if error.code == 8 && s.capacity_blocked => {
             s.items.get_mut(name).unwrap().conflict = true;
-            log(ctx, tr!("Sync storage is full; review pending items before retrying."))?;
+            log(
+                ctx,
+                tr!("Sync storage is full; review pending items before retrying."),
+            )?;
             return s.save(&ctx.state);
         }
         Err(error) => return Err(error),
@@ -381,7 +384,10 @@ pub(super) fn resolve_value<H: Host>(
     let (r, v) = match prepare_local(ctx, s, name, fp, kind, value, parents, Vid::random(), true) {
         Ok(prepared) => prepared,
         Err(error) if error.code == 8 && s.capacity_blocked => {
-            log(ctx, tr!("Sync storage is full; review pending items before retrying."))?;
+            log(
+                ctx,
+                tr!("Sync storage is full; review pending items before retrying."),
+            )?;
             return s.save(&ctx.state);
         }
         Err(error) => return Err(error),
@@ -636,14 +642,26 @@ pub(crate) fn recover<H: Host>(ctx: &mut Ctx<'_, H>, s: &mut State) -> Result<()
 
 fn collect_orphan_snapshots<H: Host>(ctx: &Ctx<'_, H>, s: &mut State) -> Result<()> {
     // Called after journal recovery: its in-flight snapshot must survive until then.
-    let orphaned = s.slots.keys().filter(|slot| {
-        slot.starts_with("sync/snapshot/")
-            && !s.versions.values().any(|v| &v.slot == *slot)
-            && !s.offers.iter().any(|o| snapshot_slot(o.vid) == **slot)
-            && !s.peers.keys().any(|peer| s.outbox.pending(&PeerId(peer.clone()))
-                .any(|id| snapshot_slot(map::wire_vid(id.new_vid)) == **slot))
-    }).cloned().collect::<Vec<_>>();
-    for slot in orphaned { release(s, &slot); }
-    if !s.gc.is_empty() { s.cleanup(ctx)?; }
+    let orphaned = s
+        .slots
+        .keys()
+        .filter(|slot| {
+            slot.starts_with("sync/snapshot/")
+                && !s.versions.values().any(|v| &v.slot == *slot)
+                && !s.offers.iter().any(|o| snapshot_slot(o.vid) == **slot)
+                && !s.peers.keys().any(|peer| {
+                    s.outbox
+                        .pending(&PeerId(peer.clone()))
+                        .any(|id| snapshot_slot(map::wire_vid(id.new_vid)) == **slot)
+                })
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    for slot in orphaned {
+        release(s, &slot);
+    }
+    if !s.gc.is_empty() {
+        s.cleanup(ctx)?;
+    }
     Ok(())
 }

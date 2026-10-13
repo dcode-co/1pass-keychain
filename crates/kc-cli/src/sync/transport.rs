@@ -96,7 +96,8 @@ pub(crate) async fn flush<H: Host>(ctx: &mut Ctx<'_, H>, digest: bool) -> Result
                         is_reply: false,
                     },
                 )
-                .await {
+                .await
+                {
                     s.peers.get_mut(&id).unwrap().hello_sent = false;
                     s.save(&ctx.state)?;
                     return Err(error);

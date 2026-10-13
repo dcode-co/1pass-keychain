@@ -211,8 +211,12 @@ fn reserve<H: Host>(
         }
         Reservation::Reserved { evicted } => {
             if let Some(victim) = evicted {
-                let evicted = s.candidates.values()
-                    .filter(|c| c.version.slot == victim).cloned().collect::<Vec<_>>();
+                let evicted = s
+                    .candidates
+                    .values()
+                    .filter(|c| c.version.slot == victim)
+                    .cloned()
+                    .collect::<Vec<_>>();
                 for c in evicted {
                     s.gc.insert(c.base_record);
                 }
@@ -290,6 +294,10 @@ fn names_summary(names: &[String]) -> String {
     if names.len() <= 3 {
         names.join(", ")
     } else {
-        tr!("{names} and {n} more", names = names[..3].join(", "), n = names.len() - 3)
+        tr!(
+            "{names} and {n} more",
+            names = names[..3].join(", "),
+            n = names.len() - 3
+        )
     }
 }

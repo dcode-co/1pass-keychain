@@ -71,7 +71,9 @@ pub(crate) struct Applied {
 impl Applied {
     /// 0 if everything is here, the keychain error's code if the keychain failed, else 8.
     pub fn exit_code(&self) -> i32 {
-        if self.confirmation_denied { return exit::INTERACTION_REQUIRED; }
+        if self.confirmation_denied {
+            return exit::INTERACTION_REQUIRED;
+        }
         match &self.keychain_error {
             Some((_, code)) => *code,
             None => local_exit_code(&self.results),
@@ -259,9 +261,19 @@ fn apply_one<H: Host>(
     if value.len() > MAX_VALUE_LEN {
         return Ok(ItemStatus::Rejected(REJECT_TOO_LARGE));
     }
-    if let Some(status) = crate::sync::legacy(ctx, item, from_device, conflicts == Conflicts::Policy(ConflictPolicy::Overwrite))
-            .map_err(|e| if e.code == exit::INTERACTION_REQUIRED { Failure::SyncConfirmation(e) } else { Failure::Cli(e) })?
-    {
+    if let Some(status) = crate::sync::legacy(
+        ctx,
+        item,
+        from_device,
+        conflicts == Conflicts::Policy(ConflictPolicy::Overwrite),
+    )
+    .map_err(|e| {
+        if e.code == exit::INTERACTION_REQUIRED {
+            Failure::SyncConfirmation(e)
+        } else {
+            Failure::Cli(e)
+        }
+    })? {
         return Ok(status);
     }
     let policy = match conflicts {

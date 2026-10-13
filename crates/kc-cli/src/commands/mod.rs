@@ -119,7 +119,9 @@ async fn dispatch<H: Host>(ctx: &mut Ctx<'_, H>, command: Command) -> Result<i32
         Command::Inbox(args) => {
             let code = inbox::inbox(ctx, args).await?;
             crate::sync::flush(ctx, false).await?;
-            Ok(if code != 0 && code != 8 { code } else {
+            Ok(if code != 0 && code != 8 {
+                code
+            } else {
                 code.max(crate::sync::pending_code(ctx)?)
             })
         }
