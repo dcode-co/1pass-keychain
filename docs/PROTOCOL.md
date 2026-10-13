@@ -256,7 +256,28 @@ terminals and none of `CI`, `CLAUDECODE` or `--no-input` is set.
 | `pair`, `--remember`, `--all`, overwrite on receive or inbox | **always refused, exit 5** (`agent_code_send` doesn't change this) | allowed after showing names and peer label/SAS |
 | `receive` (shows a code) | allowed, conflicts skipped | allowed |
 
-Without a TTY, kc never prompts. It exits 5 and names the missing flags.
+For sync, **L** means confirmation by a human on the local device through
+Touch ID (or the OS password fallback), Windows Hello, or polkit. A terminal
+prompt alone is not L. Missing, denied or unavailable L returns exit 5.
+
+| Sync action | Non-interactive (agents, scripts) | Interactive |
+|---|---|---|
+| `sync`, `sync offer NAME` | allowed to queue/send changes and proposals within the already approved scope; no remote overwrite | same |
+| `sync status`, `sync status --json`, `sync peer list` | allowed; no values displayed | allowed |
+| `sync freeze` | allowed; holds incoming changes | allowed without L |
+| `sync add NAME`, `sync rm NAME`, `sync peer add LABEL`, `sync peer rm LABEL` | refused, exit 5 | L required |
+| `sync review` | refused, exit 5 | accepting proposals or held changes requires L; rejecting or leaving them for later does not |
+| `sync resolve NAME --keep mine`, `sync resolve NAME --keep LABEL`, `sync restore-checkpoint NAME` | refused, exit 5 | L required |
+| `sync status --confirm-checkpoint NAME`, `sync unfreeze` | refused, exit 5 | L required |
+
+Nothing syncs by default. Agents can create proposals and queue/send changes,
+but cannot enroll items, expand sharing scope or accept remote values. Phase 1
+holds **every remote overwrite** for human review on the receiving device;
+conflicts require explicit resolution. Even a resolution sent by another device
+cannot bypass local review. Ordinary local writes such as `set` retain the
+permissions above; their queued changes do not authorize a remote overwrite.
+
+Without a TTY, kc never prompts. Operations that require interaction exit 5.
 
 ## 7. Using values without leaking them
 
@@ -282,10 +303,17 @@ Defined in `kc_wire::exit`.
 | 5 | interaction required |
 | 6 | relay unavailable or rate limited |
 | 7 | auth failed (bad code or MAC, tampering, replay) |
-| 8 | partial |
+| 8 | partial; for sync, work remains pending or blocked (proposals, held changes, conflicts, queued delivery, re-offer needed, frozen state, capacity, quarantine or a tripped limit) |
 | 9 | expired |
 
-## 9. Reserved for phase 2
+## 9. Reserved for later phases
+
+Signed sync approvals (A/A+) and FIDO2 verification are planned for Phase 1b;
+the 1pass.dev phone approver is planned for Phase 2b. None ships in this
+release. Phase 1 ignores signed approval documents and never uses them to
+authorize an automatic overwrite.
+
+The following approval lock is also reserved for phase 2:
 
 `/v1/locks/*`: an approval lock for selected items. A key share is held by the
 relay and released only after an authenticator code (TOTP) or a passkey

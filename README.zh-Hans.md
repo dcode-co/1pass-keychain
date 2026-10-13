@@ -129,6 +129,26 @@ desktop$ kc inbox                            # 保存收到的内容（最多保
 `kc peers rm LABEL` 解除与某台设备的配对；如果有机器丢失，请在其他机器上运行此命令。
 何时使用 `kc device rotate`，请参阅 [docs/SECURITY.md](docs/SECURITY.md)。
 
+## 同步
+
+在已配对的设备之间同步选定的条目。**默认不同步任何条目。**
+将 `NAME` 替换为已有条目的名称：
+
+```console
+$ kc sync add NAME          # 加入同步范围，并向其他设备发送提议
+$ kc sync                   # 在两台设备上运行，交换更改
+$ kc sync review            # 在接收设备上审核提议和暂存的更改
+$ kc sync status            # 显示状态和本机的值指纹，不显示值
+```
+
+当前版本会暂存所有远程覆盖操作，等待人工审核。同步中每次应用值都需要通过
+Touch ID（或系统密码）、Windows Hello 或 polkit 在本机确认。加入同步范围也需要
+确认。普通的本地写入可以将更改加入发送队列，但不会授权覆盖其他设备上的值。
+发生冲突时会保留候选值；使用 `kc sync resolve NAME --keep mine` 或
+`kc sync resolve NAME --keep LABEL` 选择要保留的版本。其他设备仍需审核结果。
+`kc sync freeze` 无需确认即可暂停应用传入的更改；`kc sync unfreeze` 需要系统确认。
+退出码 8 表示仍有待处理或受阻的工作。另请参阅[安全限制](docs/SECURITY.md)。
+
 ## 命令
 
 | 命令 | 作用 |
@@ -140,6 +160,7 @@ desktop$ kc inbox                            # 保存收到的内容（最多保
 | `kc adopt --service S [--account A] [--as NAME]` | 将现有钥匙串条目复制到 kc |
 | `kc receive` / `kc send [NAMES…]` | 用一次性代码转移条目 |
 | `kc pair`, `kc peers`, `kc inbox`, `kc device` | 已记住的设备 |
+| `kc sync` | 与已配对的设备同步选定条目 |
 | `kc doctor` | 检查钥匙串、中继服务器和配置 |
 
 ## 故障排除

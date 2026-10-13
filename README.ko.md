@@ -132,6 +132,29 @@ desktop$ kc inbox                            # 도착한 항목을 저장(최대
 실행하세요. `kc device rotate` 를 언제 쓰는지는
 [docs/SECURITY.md](docs/SECURITY.md) 에 있습니다.
 
+## 동기화
+
+선택한 항목을 페어링한 기기끼리 동기화합니다. **처음에는 아무 항목도
+동기화하지 않습니다.** `NAME`에 기존 항목 이름을 넣으세요.
+
+```console
+$ kc sync add NAME          # 동기화 대상으로 등록하고 다른 기기에 제안
+$ kc sync                   # 양쪽 기기에서 실행해 변경 사항 교환
+$ kc sync review            # 받는 기기에서 제안과 보류된 변경 검토
+$ kc sync status            # 값 대신 상태와 이 기기의 값 지문 표시
+```
+
+이 버전은 원격 덮어쓰기를 모두 보류하고 사람이 검토합니다. 동기화 과정에서
+값을 적용할 때마다 Touch ID(또는 OS 암호), Windows Hello, polkit으로 확인합니다.
+동기화 대상 등록에도 이 확인이 필요합니다. 일반적인 로컬 쓰기는 변경을 전송 대기열에
+넣을 수 있지만, 다른 기기의 값을 덮어쓸 권한까지 부여하지는 않습니다.
+충돌이 나면 후보 값을 보관합니다. `kc sync resolve NAME --keep mine`으로
+이 기기의 값을, `kc sync resolve NAME --keep LABEL`로 해당 기기의 후보 값을
+선택하세요. 다른 기기에서는 그 결과도 검토해야 합니다. `kc sync freeze`는 별도
+확인 없이 수신 변경의 적용을 중단하고, `kc sync unfreeze`는 OS 확인 후 다시
+허용합니다. 종료 코드 8은 대기 중이거나 막힌 작업이 남아 있다는 뜻입니다.
+[보안상 한계](docs/SECURITY.md)도 참고하세요.
+
 ## 명령
 
 | 명령 | 하는 일 |
@@ -143,6 +166,7 @@ desktop$ kc inbox                            # 도착한 항목을 저장(최대
 | `kc adopt --service S [--account A] [--as NAME]` | 이미 있는 키체인 항목을 kc 로 복사 |
 | `kc receive` / `kc send [NAMES…]` | 일회용 코드로 항목 옮기기 |
 | `kc pair`, `kc peers`, `kc inbox`, `kc device` | 기억된 기기 |
+| `kc sync` | 선택한 항목을 페어링한 기기끼리 동기화 |
 | `kc doctor` | 키체인, 중계 서버, 설정 점검 |
 
 ## 문제 해결
