@@ -191,8 +191,9 @@ logi 점검 결과(`scratchpad/logi-survey.md`)를 근거로, kc 전용 승인 �
 ```text
 InboxPlain2 { v:2, msg_id, sender_fp, recipient_fp, created_at, expires_at, body }
 body = Items(...) | Sync { kind: Hello | Offer | Accept | Leave | Changes | Ack | Digest | Approvals }
-Change { name, generation, new_vid, lineage(≤64), op: Put{value,kind} | Retire, approval_ref? }
+Change { name, generation, new_vid, parents: [vid…], lineage(≤64), op: Put{value,kind} | Retire, approval_ref? }
 ```
+- `Change.parents` 는 보낸 기기가 주장하는 직접 parent 목록이다(해결 메시지면 모든 후보 head). 승인이 붙은 변경은 `parents` 가 승인 문서의 parents 와 **정확히 같아야** 한다(다르면 거부). 승인이 없는 parents 는 보류와 충돌 중 어디로 보낼지만 정하고, 어느 쪽이든 사람이 본다. 그래서 위조해도 자동 적용으로 이어지지 않는다.
 - 상대의 v2 지원 여부를 모르면 **Hello 한 통만** 보낸다. Hello 는 기능 목록만 담고 받는 쪽 상태를 바꾸지 않는 무해한 메시지다. v0.2 기기에서는 72시간 뒤 만료되는 낭비 1통으로 끝난다. Hello 응답을 받기 전에는 다른 sync 메시지를 보내지 않고 보류한다(v0.2 재리뷰 P1: 확인 전 금지 규칙이 Hello 까지 막아 교착되던 문제). **sync 변경을 v1 Items 로 낮춰 보내지 않는다.** 일반 `send --to` 는 지금처럼 v1 이다.
 - `kc inbox` 와 `kc sync` 는 같은 인박스 처리 루프를 쓰고 내용 종류로 나눈다.
 - `docs/PROTOCOL.md` §4(v2)·§6(sync·L/A/A+ 행)·§9(승인자로 일원화)와 `docs/SECURITY.md`(1pass.dev 신뢰 경계, 등록 시점 한계, 원작자 소실 한계)를 함께 고친다.
@@ -291,10 +292,12 @@ v0.3 재리뷰가 "지금 정하지 않으면 다시 짜야 한다"고 꼽은 5�
   - 이전 지문과 같음 → 쓰기가 일어나지 않았으니 journal 만 지우고 다시 시도한다.
   - **둘 다 아님** → 그 사이 다른 쓰기가 있었다. 덮어쓰지 않고 충돌로 남긴다.
 - ACK 는 ④가 끝난 뒤에만 보낸다.
+- **로컬 변경 한 건 = 한 트랜잭션**(`kc set`·`restore`·`adopt`·스캔으로 찾은 변경): ① journal 에 로컬 변경 레코드 기록 — 이름, 이전 지문, 새 지문, 새 vid, parents, 스냅샷 슬롯 이름, 만들 큐 항목(대상 기기·세대) → ② 보낼 값 스냅샷 슬롯에 값 복사 → ③ `sync.json`(head·lineage·큐) 갱신 → ④ journal 정리. `kc set` 은 키체인 쓰기를 ① 과 ② 사이에 한다.
+- 재시작 때 로컬 변경 journal 이 남아 있으면: 현재 값 지문이 새 지문과 같고 스냅샷이 있으면 ③부터 마저 한다. 현재 값이 새 지문과 다르면(그 사이 또 바뀜) 스냅샷을 버리고 journal 을 지운다. 다음 스캔이 새 vid 를 만든다.
 
 ### 12.5 단계 경계와 판정 순서
 - **로컬 확인(L)을 Phase 1 로 앞당긴다.** add·review·resolve 가 L 에 의존하기 때문이다.
-- Phase 1 에는 서명 승인(A)이 없다. 판정표는 그대로 쓰되, **7번(자동 앞으로 감기)이 Phase 1 에서는 절대 걸리지 않는다**(검증된 승인이 없으므로). 그래서 parent 가 맞는 원격 덮어쓰기는 8번(review 보류), parent 가 다르면 9번(충돌)이다. 자동 적용은 Phase 1b 부터다.
+- Phase 1 에는 서명 승인(A)이 없다. 판정은 `Change.parents` 로 한다. 판정표는 그대로 쓰되, **7번(자동 앞으로 감기)이 Phase 1 에서는 절대 걸리지 않는다**(검증된 승인이 없으므로). 그래서 parent 가 맞는 원격 덮어쓰기는 8번(review 보류), parent 가 다르면 9번(충돌)이다. 자동 적용은 Phase 1b 부터다.
 - resolve: Phase 1 에서는 보내는 기기에서 L 만 요구한다. 받는 기기는 그 해결 메시지를 승인 없는 변경으로 보고 review 에 보류한다(§2.4 의 후보 포함 검사는 그대로). Phase 1b 부터 L + A 로 올리고, 승인이 붙은 해결은 자동 적용한다.
 - `decide` 는 검증기가 통과시킨 승인만 받는다(`Option<VerifiedApproval>`). 서명 바이트를 직접 보지 않는다.
 - 판정 순서(위에서 먼저 걸리는 것이 이긴다):
