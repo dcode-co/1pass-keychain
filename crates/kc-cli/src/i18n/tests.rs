@@ -21,7 +21,11 @@ fn source_texts() -> BTreeSet<String> {
             if path.is_dir() {
                 stack.push(path);
             } else if path.extension().is_some_and(|e| e == "rs") {
-                let text = std::fs::read_to_string(&path).unwrap();
+                // A Windows checkout may have CRLF line ends; rustc reads `\` + CRLF
+                // as a line continuation too.
+                let text = std::fs::read_to_string(&path)
+                    .unwrap()
+                    .replace("\r\n", "\n");
                 collect_literals(&text, &mut out);
             }
         }
