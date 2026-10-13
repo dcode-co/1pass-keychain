@@ -8,6 +8,8 @@ use std::io::{self, Read, Write};
 
 use zeroize::{Zeroize as _, Zeroizing};
 
+use crate::i18n::tr;
+
 /// Why a prompt didn't produce an answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PromptError {
@@ -118,7 +120,7 @@ fn prompt_error(e: inquire::InquireError) -> PromptError {
     match e {
         E::OperationCanceled => PromptError::Cancelled,
         E::OperationInterrupted => PromptError::Interrupted,
-        E::NotTTY => PromptError::Failed("no terminal to prompt on".into()),
+        E::NotTTY => PromptError::Failed(tr!("no terminal to prompt on")),
         E::IO(e) => PromptError::Failed(e.to_string()),
         E::InvalidConfiguration(m) => PromptError::Failed(m),
         E::Custom(e) => PromptError::Failed(e.to_string()),
@@ -140,8 +142,13 @@ impl Console for TermConsole {
 
     fn confirm(&mut self, message: &str, default: bool) -> Result<bool, PromptError> {
         self.before_prompt();
+        // inquire's own texts, translated. The answers stay y/yes and n/no.
+        let error = tr!("Invalid answer, try typing 'y' for yes or 'n' for no");
+        let formatter = |answer: bool| if answer { tr!("Yes") } else { tr!("No") };
         inquire::Confirm::new(message)
             .with_default(default)
+            .with_error_message(&error)
+            .with_formatter(&formatter)
             .prompt()
             .map_err(prompt_error)
     }
@@ -153,7 +160,9 @@ impl Console for TermConsole {
         default: usize,
     ) -> Result<usize, PromptError> {
         self.before_prompt();
+        let help = tr!("↑↓ to move, enter to select, type to filter");
         inquire::Select::new(message, options.to_vec())
+            .with_help_message(&help)
             .with_starting_cursor(default.min(options.len().saturating_sub(1)))
             .raw_prompt()
             .map(|choice| choice.index)
@@ -166,9 +175,10 @@ impl Console for TermConsole {
         options: &[String],
     ) -> Result<Vec<usize>, PromptError> {
         self.before_prompt();
+        let help = tr!("space: check, enter: done, type to filter");
         inquire::MultiSelect::new(message, options.to_vec())
             .with_page_size(15)
-            .with_help_message("space: check, enter: done, type to filter")
+            .with_help_message(&help)
             .raw_prompt()
             .map(|chosen| chosen.into_iter().map(|c| c.index).collect())
             .map_err(prompt_error)

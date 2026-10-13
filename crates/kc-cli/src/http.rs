@@ -29,6 +29,7 @@ use serde::de::DeserializeOwned;
 use zeroize::Zeroizing;
 
 use crate::error::CliError;
+use crate::i18n::tr;
 use crate::settings::RelayUrl;
 use crate::state::is_url_token;
 
@@ -81,7 +82,7 @@ impl HttpRelay {
             .https_only(!relay.is_plain_http())
             .http1_only()
             .build()
-            .map_err(|e| CliError::failure(format!("can't set up the HTTP client: {e}")))?;
+            .map_err(|e| CliError::failure(tr!("can't set up the HTTP client: {e}", e = e)))?;
         Ok(HttpRelay {
             client,
             relay: relay.clone(),
@@ -124,7 +125,7 @@ impl HttpRelay {
         if let Some(token) = bearer {
             let value = Zeroizing::new(format!("Bearer {token}"));
             let mut value = HeaderValue::from_str(&value)
-                .map_err(|_| RelayError::BadResponse("invalid token".into()))?;
+                .map_err(|_| RelayError::BadResponse(tr!("invalid token")))?;
             value.set_sensitive(true);
             request = request.header(header::AUTHORIZATION, value);
         }
@@ -170,9 +171,9 @@ impl Answer {
         if allowed.contains(&self.status) {
             Ok(self.body)
         } else {
-            Err(RelayError::BadResponse(format!(
-                "unexpected status {}",
-                self.status.as_u16()
+            Err(RelayError::BadResponse(tr!(
+                "unexpected status {status}",
+                status = self.status.as_u16()
             )))
         }
     }
@@ -181,9 +182,9 @@ impl Answer {
 fn transport(e: reqwest::Error) -> RelayError {
     let e = e.without_url();
     let what = if e.is_timeout() {
-        "timed out".to_owned()
+        tr!("timed out")
     } else if e.is_connect() {
-        format!("connection failed ({})", root_cause(&e))
+        tr!("connection failed ({cause})", cause = root_cause(&e))
     } else {
         root_cause(&e)
     };
@@ -207,14 +208,14 @@ async fn read_capped(
 ) -> Result<Zeroizing<Vec<u8>>, RelayError> {
     let expected = response.content_length();
     if expected.is_some_and(|len| len > cap as u64) {
-        return Err(RelayError::BadResponse("the answer is too large".into()));
+        return Err(RelayError::BadResponse(tr!("the answer is too large")));
     }
     let first = expected.map_or(1024, |len| len as usize).min(cap);
     let mut out = Zeroizing::new(Vec::with_capacity(first));
     while let Some(chunk) = response.chunk().await.map_err(transport)? {
         let needed = out.len() + chunk.len();
         if needed > cap {
-            return Err(RelayError::BadResponse("the answer is too large".into()));
+            return Err(RelayError::BadResponse(tr!("the answer is too large")));
         }
         if needed > out.capacity() {
             let mut bigger = Zeroizing::new(Vec::with_capacity(
@@ -261,20 +262,31 @@ fn error_from(status: StatusCode, body: &[u8], retry_after: Option<u32>) -> Rela
 
 fn parse_json<T: DeserializeOwned>(body: &[u8]) -> Result<T, RelayError> {
     serde_json::from_slice(body)
-        .map_err(|_| RelayError::BadResponse("the answer isn't the expected JSON".into()))
+        .map_err(|_| RelayError::BadResponse(tr!("the answer isn't the expected JSON")))
 }
 
 fn wait_query(wait: Duration) -> String {
     format!("?wait={}", wait.as_secs().min(LONG_POLL_MAX_SECS))
 }
 
+/// Which id [`check_id`] looks at.
+#[derive(Clone, Copy)]
+enum Id {
+    Inbox,
+    Writer,
+    Message,
+}
+
 /// Ids go into URL paths; anything but base64url is refused before a request is made.
-fn check_id(id: &str, what: &str) -> Result<(), RelayError> {
+fn check_id(id: &str, what: Id) -> Result<(), RelayError> {
     if is_url_token(id) {
-        Ok(())
-    } else {
-        Err(RelayError::BadResponse(format!("invalid {what}")))
+        return Ok(());
     }
+    Err(RelayError::BadResponse(match what {
+        Id::Inbox => tr!("invalid inbox id"),
+        Id::Writer => tr!("invalid writer id"),
+        Id::Message => tr!("invalid message id"),
+    }))
 }
 
 impl RelayApi for HttpRelay {
@@ -348,9 +360,9 @@ impl RelayApi for HttpRelay {
             StatusCode::NO_CONTENT => Ok(None),
             // Ciphertext: no need to keep it in a wiped buffer.
             StatusCode::OK => Ok(Some(answer.body.to_vec())),
-            other => Err(RelayError::BadResponse(format!(
-                "unexpected status {}",
-                other.as_u16()
+            other => Err(RelayError::BadResponse(tr!(
+                "unexpected status {status}",
+                status = other.as_u16()
             ))),
         }
     }
@@ -388,7 +400,7 @@ impl RelayApi for HttpRelay {
             .await?
             .expect_status(&[StatusCode::CREATED, StatusCode::OK])?;
         let created: InboxCreated = parse_json(&body)?;
-        check_id(&created.inbox_id, "inbox id")?;
+        check_id(&created.inbox_id, Id::Inbox)?;
         Ok(created)
     }
 
@@ -398,9 +410,9 @@ impl RelayApi for HttpRelay {
         owner_token: &str,
         request: &WriterRegister,
     ) -> Result<WriterRegistered, RelayError> {
-        check_id(inbox_id, "inbox id")?;
+        check_id(inbox_id, Id::Inbox)?;
         let json = serde_json::to_vec(request)
-            .map_err(|_| RelayError::BadResponse("can't encode the request".into()))?;
+            .map_err(|_| RelayError::BadResponse(tr!("can't encode the request")))?;
         let body = self
             .call(
                 Method::POST,
@@ -413,7 +425,7 @@ impl RelayApi for HttpRelay {
             .await?
             .expect_status(&[StatusCode::CREATED, StatusCode::OK])?;
         let registered: WriterRegistered = parse_json(&body)?;
-        check_id(&registered.writer_id, "writer id")?;
+        check_id(&registered.writer_id, Id::Writer)?;
         Ok(registered)
     }
 
@@ -423,8 +435,8 @@ impl RelayApi for HttpRelay {
         owner_token: &str,
         writer_id: &str,
     ) -> Result<(), RelayError> {
-        check_id(inbox_id, "inbox id")?;
-        check_id(writer_id, "writer id")?;
+        check_id(inbox_id, Id::Inbox)?;
+        check_id(writer_id, Id::Writer)?;
         self.call(
             Method::DELETE,
             &paths::writer(inbox_id, writer_id),
@@ -444,7 +456,7 @@ impl RelayApi for HttpRelay {
         writer_token: &str,
         body: &[u8],
     ) -> Result<MessageAccepted, RelayError> {
-        check_id(inbox_id, "inbox id")?;
+        check_id(inbox_id, Id::Inbox)?;
         let answer = self
             .call(
                 Method::POST,
@@ -465,7 +477,7 @@ impl RelayApi for HttpRelay {
         owner_token: &str,
         wait: Duration,
     ) -> Result<InboxMessages, RelayError> {
-        check_id(inbox_id, "inbox id")?;
+        check_id(inbox_id, Id::Inbox)?;
         let path = format!("{}{}", paths::messages(inbox_id), wait_query(wait));
         let body = self
             .call(
@@ -480,7 +492,7 @@ impl RelayApi for HttpRelay {
             .expect_status(&[StatusCode::OK])?;
         let listing: InboxMessages = parse_json(&body)?;
         for m in &listing.messages {
-            check_id(&m.msg_id, "message id")?;
+            check_id(&m.msg_id, Id::Message)?;
         }
         Ok(listing)
     }
@@ -491,8 +503,8 @@ impl RelayApi for HttpRelay {
         owner_token: &str,
         msg_id: &str,
     ) -> Result<(), RelayError> {
-        check_id(inbox_id, "inbox id")?;
-        check_id(msg_id, "message id")?;
+        check_id(inbox_id, Id::Inbox)?;
+        check_id(msg_id, Id::Message)?;
         self.call(
             Method::DELETE,
             &paths::message(inbox_id, msg_id),
@@ -507,7 +519,7 @@ impl RelayApi for HttpRelay {
     }
 
     async fn delete_inbox(&self, inbox_id: &str, owner_token: &str) -> Result<(), RelayError> {
-        check_id(inbox_id, "inbox id")?;
+        check_id(inbox_id, Id::Inbox)?;
         self.call(
             Method::DELETE,
             &paths::inbox(inbox_id),
@@ -571,10 +583,10 @@ mod tests {
 
     #[test]
     fn ids_must_be_url_safe() {
-        assert!(check_id("AbC-_09", "x").is_ok());
-        assert!(check_id("../../v1", "x").is_err());
-        assert!(check_id("a/b", "x").is_err());
-        assert!(check_id("", "x").is_err());
+        assert!(check_id("AbC-_09", Id::Inbox).is_ok());
+        assert!(check_id("../../v1", Id::Inbox).is_err());
+        assert!(check_id("a/b", Id::Inbox).is_err());
+        assert!(check_id("", Id::Inbox).is_err());
     }
 
     #[test]

@@ -7,10 +7,11 @@ use kc_proto::{DeviceKeyPair, Label};
 use kc_wire::{ErrorCode, exit};
 use zeroize::Zeroizing;
 
-use super::{Ctx, pairing, plural, say};
+use super::{Ctx, display_width, pad_to, pairing, say};
 use crate::cli::{DeviceArgs, DeviceCommand};
 use crate::error::{CliError, Result};
 use crate::host::Host;
+use crate::i18n::tr;
 use crate::state::Peers;
 
 pub(super) async fn device<H: Host>(ctx: &mut Ctx<'_, H>, args: DeviceArgs) -> Result<i32> {
@@ -25,45 +26,61 @@ fn show<H: Host>(ctx: &mut Ctx<'_, H>) -> Result<i32> {
     let label = ctx.label();
     let fingerprint = match pairing::device_key(ctx)? {
         Some(key) => key.fingerprint().short(),
-        None => "none yet (made when this device first pairs)".to_owned(),
+        None => tr!("none yet (made when this device first pairs)"),
     };
     let inbox = match pairing::own_inbox(ctx)? {
-        Some(_) => "yes",
-        None => "none yet (made when this device first pairs)",
+        Some(_) => tr!("yes"),
+        None => tr!("none yet (made when this device first pairs)"),
     };
-    let relay = ctx
-        .relay_url()
-        .map_or_else(|e| format!("invalid: {}", e.message), |url| url.to_string());
-    let peers = ctx.state.load_peers()?.peers.len();
-    let text = format!(
-        "label:            {label}\n\
-         fingerprint:      {fingerprint}\n\
-         inbox:            {inbox}\n\
-         relay:            {relay}\n\
-         paired devices:   {peers}\n\
-         agent code sends: {}\n",
-        if ctx.settings.agent_code_send {
-            "allowed (agent_code_send = true)"
-        } else {
-            "refused"
-        }
+    let relay = ctx.relay_url().map_or_else(
+        |e| tr!("invalid: {error}", error = e.message),
+        |url| url.to_string(),
     );
+    let peers = ctx.state.load_peers()?.peers.len().to_string();
+    let agent_code_sends = if ctx.settings.agent_code_send {
+        tr!("allowed (agent_code_send = true)")
+    } else {
+        tr!("refused")
+    };
+    let rows = [
+        (tr!("label:"), label.to_string()),
+        (tr!("fingerprint:"), fingerprint),
+        (tr!("inbox:"), inbox),
+        (tr!("relay:"), relay),
+        (tr!("paired devices:"), peers),
+        (tr!("agent code sends:"), agent_code_sends),
+    ];
+    let width = rows
+        .iter()
+        .map(|(k, _)| display_width(k))
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let text: String = rows
+        .iter()
+        .map(|(k, v)| format!("{}{v}\n", pad_to(k, width)))
+        .collect();
     ctx.emit(text.as_bytes())?;
     Ok(exit::OK)
 }
 
 fn rename<H: Host>(ctx: &mut Ctx<'_, H>, label: &str) -> Result<i32> {
     let label = Label::new(label.trim())
-        .map_err(|_| CliError::usage("a device label is 1-64 printable ASCII characters"))?;
+        .map_err(|_| CliError::usage(tr!("a device label is 1-64 printable ASCII characters")))?;
     let lock = ctx.state.lock()?;
     pairing::update_settings(ctx, &lock, |s| s.label = Some(label.to_string()))?;
     say!(
         ctx,
-        "This device now suggests the label {label} when it pairs."
+        "{}",
+        tr!(
+            "This device now suggests the label {label} when it pairs.",
+            label = label
+        )
     );
     say!(
         ctx,
-        "Devices already paired keep the label they chose for it."
+        "{}",
+        tr!("Devices already paired keep the label they chose for it.")
     );
     Ok(exit::OK)
 }
@@ -92,25 +109,39 @@ async fn rotate<H: Host>(ctx: &mut Ctx<'_, H>) -> Result<i32> {
             .unwrap_or(0),
         None => 0,
     };
-    say!(
-        ctx,
-        "Rotating makes a new device key and inbox, deletes the old inbox and unpairs {}{}.",
-        plural(labels.len(), "device"),
-        if labels.is_empty() {
-            String::new()
-        } else {
-            format!(" ({})", labels.join(", "))
-        }
-    );
+    let n = labels.len();
+    let text = match n {
+        0 => tr!(
+            "Rotating makes a new device key and inbox, deletes the old inbox and unpairs 0 devices."
+        ),
+        1 => tr!(
+            "Rotating makes a new device key and inbox, deletes the old inbox and unpairs {n} device ({labels}).",
+            n = n,
+            labels = labels.join(", ")
+        ),
+        _ => tr!(
+            "Rotating makes a new device key and inbox, deletes the old inbox and unpairs {n} devices ({labels}).",
+            n = n,
+            labels = labels.join(", ")
+        ),
+    };
+    say!(ctx, "{text}");
     if pending > 0 {
-        say!(
-            ctx,
-            "{} waiting in the inbox will be lost; run `kc inbox` first to keep them.",
-            plural(pending, "message")
-        );
+        let text = if pending == 1 {
+            tr!(
+                "{n} message waiting in the inbox will be lost; run `kc inbox` first to keep them.",
+                n = pending
+            )
+        } else {
+            tr!(
+                "{n} messages waiting in the inbox will be lost; run `kc inbox` first to keep them.",
+                n = pending
+            )
+        };
+        say!(ctx, "{text}");
     }
-    if !ctx.confirm("Rotate this device's key?", false)? {
-        say!(ctx, "Nothing changed.");
+    if !ctx.confirm(&tr!("Rotate this device's key?"), false)? {
+        say!(ctx, "{}", tr!("Nothing changed."));
         return Ok(exit::PARTIAL);
     }
 
@@ -130,13 +161,13 @@ async fn rotate<H: Host>(ctx: &mut Ctx<'_, H>) -> Result<i32> {
     let created = relay
         .create_inbox()
         .await
-        .map_err(|e| CliError::from(e).context("making the new inbox; nothing changed"))?;
+        .map_err(|e| CliError::from(e).context(tr!("making the new inbox; nothing changed")))?;
     let new_owner = Zeroizing::new(created.owner_token);
     let new_inbox = created.inbox_id;
 
     if let Err(e) = ctx.state.save_peers(&Peers::default()) {
         let _ = relay.delete_inbox(&new_inbox, &new_owner).await;
-        return Err(e.context("nothing changed"));
+        return Err(e.context(tr!("nothing changed")));
     }
     let mut leftovers = 0;
     for peer in &peers.peers {
@@ -151,8 +182,10 @@ async fn rotate<H: Host>(ctx: &mut Ctx<'_, H>) -> Result<i32> {
         if !installed {
             let _ = relay.delete_inbox(&new_inbox, &new_owner).await;
             return Err(e
-                .context("the pairings were removed, but the new inbox couldn't be stored")
-                .with_hint("run `kc device rotate` again"));
+                .context(tr!(
+                    "the pairings were removed, but the new inbox couldn't be stored"
+                ))
+                .with_hint(tr!("run `kc device rotate` again")));
         }
         // Installed in the keychain; config.toml's copy of the id is written again with
         // the key below, and rotation fails if that doesn't work either.
@@ -203,30 +236,45 @@ async fn rotate<H: Host>(ctx: &mut Ctx<'_, H>) -> Result<i32> {
     {
         say!(
             ctx,
-            "The old inbox couldn't be deleted ({e}); the relay drops it after 30 idle days."
+            "{}",
+            tr!(
+                "The old inbox couldn't be deleted ({error}); the relay drops it after 30 idle days.",
+                error = e
+            )
         );
         code = exit::RELAY_UNAVAILABLE;
     }
     if let Err(e) = key_replaced {
         return Err(e
-            .context("the new inbox is in place and the pairings are gone, but the rotation didn't finish")
-            .with_hint("run `kc device rotate` again"));
+            .context(tr!(
+                "the new inbox is in place and the pairings are gone, but the rotation didn't finish"
+            ))
+            .with_hint(tr!("run `kc device rotate` again")));
     }
-    say!(ctx, "New fingerprint: {}.", new_key.fingerprint().short());
+    say!(
+        ctx,
+        "{}",
+        tr!(
+            "New fingerprint: {fingerprint}.",
+            fingerprint = new_key.fingerprint().short()
+        )
+    );
     if !labels.is_empty() {
         say!(
             ctx,
-            "On each device that was paired ({}), run `kc peers rm` with its label for this \
-             device, then pair again with `kc pair` here and `kc pair --join` there.",
-            labels.join(", ")
+            "{}",
+            tr!(
+                "On each device that was paired ({labels}), run `kc peers rm` with its label for this device, then pair again with `kc pair` here and `kc pair --join` there.",
+                labels = labels.join(", ")
+            )
         );
     }
     if leftovers > 0 {
-        return Err(CliError::failure(format!(
-            "rotated, but {} of the old pairings' tokens couldn't be deleted from the keychain",
-            leftovers
+        return Err(CliError::failure(tr!(
+            "rotated, but {n} of the old pairings' tokens couldn't be deleted from the keychain",
+            n = leftovers
         ))
-        .with_hint("they are no longer used, so leaving them does no harm"));
+        .with_hint(tr!("they are no longer used, so leaving them does no harm")));
     }
     Ok(code)
 }

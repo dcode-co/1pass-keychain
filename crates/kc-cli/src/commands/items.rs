@@ -11,11 +11,12 @@ use kc_store::{Change, ItemInfo, ItemKind, MAX_VALUE_LEN, Origin};
 use kc_wire::exit;
 use zeroize::Zeroizing;
 
-use super::{Ctx, plural, say};
+use super::{Ctx, display_width, pad_to, plural_tr, say};
 use crate::cli::{AdoptArgs, ExecArgs, GetArgs, ListArgs, NameArgs, RmArgs, SetArgs};
 use crate::console::Console as _;
 use crate::error::{CliError, Result};
 use crate::host::Host;
+use crate::i18n::tr;
 use crate::state::write_secret_file;
 use crate::values::{
     is_env_var_name, item_name, printable, read_file, read_secret, strip_line_ending,
@@ -24,24 +25,37 @@ use crate::values::{
 
 pub(super) fn set<H: Host>(ctx: &mut Ctx<'_, H>, args: SetArgs) -> Result<i32> {
     if !args.extra.is_empty() {
-        return Err(CliError::usage(format!(
-            "kc set takes only the item name; {} not shown. Values are never taken from \
-             arguments (they'd stay in shell history and the process list)",
-            plural(args.extra.len(), "extra argument")
+        let n = args.extra.len();
+        return Err(CliError::usage(plural_tr(
+            n,
+            tr!(
+                "kc set takes only the item name; {n} extra argument not shown. Values are never \
+                 taken from arguments (they'd stay in shell history and the process list)",
+                n = n
+            ),
+            tr!(
+                "kc set takes only the item name; {n} extra arguments not shown. Values are \
+                 never taken from arguments (they'd stay in shell history and the process list)",
+                n = n
+            ),
         ))
-        .with_hint("pipe the value: printf %s \"$VALUE\" | kc set NAME, or use --from-file PATH"));
+        .with_hint(tr!(
+            "pipe the value: printf %s \"$VALUE\" | kc set NAME, or use --from-file PATH"
+        )));
     }
     let name = item_name(&args.name)?;
     let (value, kind) = match &args.from_file {
         Some(path) => (read_file(path, MAX_VALUE_LEN)?, ItemKind::File),
         // The policy already refused this for non-interactive runs.
         None if ctx.host.stdin_is_terminal() => {
-            let typed = ctx.secret(&format!("Value for {name}:"))?;
+            let typed = ctx.secret(&tr!("Value for {name}:", name = name))?;
             (Zeroizing::new(typed.as_bytes().to_vec()), ItemKind::Text)
         }
         None => {
-            let mut value = read_secret(ctx.host.console().stdin(), MAX_VALUE_LEN + 2)
-                .map_err(|e| CliError::usage(format!("can't read the value from stdin: {e}")))?;
+            let mut value =
+                read_secret(ctx.host.console().stdin(), MAX_VALUE_LEN + 2).map_err(|e| {
+                    CliError::usage(tr!("can't read the value from stdin: {error}", error = e))
+                })?;
             if !args.raw {
                 strip_line_ending(&mut value);
             }
@@ -49,19 +63,37 @@ pub(super) fn set<H: Host>(ctx: &mut Ctx<'_, H>, args: SetArgs) -> Result<i32> {
         }
     };
     if value.is_empty() {
-        return Err(CliError::usage("the value is empty; nothing was stored"));
+        return Err(CliError::usage(tr!(
+            "the value is empty; nothing was stored"
+        )));
     }
     let outcome = {
         let _items = ctx.state.lock_items(ctx.store.namespace())?;
         ctx.store.set(name.as_str(), &value, kind, Origin::Local)?
     };
     match outcome.change {
-        Change::Created => say!(ctx, "Stored {name} ({}).", plural(value.len(), "byte")),
+        Change::Created => {
+            let n = value.len();
+            let line = plural_tr(
+                n,
+                tr!("Stored {name} ({n} byte).", name = name, n = n),
+                tr!("Stored {name} ({n} bytes).", name = name, n = n),
+            );
+            say!(ctx, "{line}");
+        }
         Change::Updated => say!(
             ctx,
-            "Updated {name}. The previous value is kept: `kc restore {name}` brings it back."
+            "{}",
+            tr!(
+                "Updated {name}. The previous value is kept: `kc restore {name}` brings it back.",
+                name = name
+            )
         ),
-        Change::Unchanged => say!(ctx, "{name} already has this value."),
+        Change::Unchanged => say!(
+            ctx,
+            "{}",
+            tr!("{name} already has this value.", name = name)
+        ),
     }
     Ok(exit::OK)
 }
@@ -78,12 +110,12 @@ pub(super) fn get<H: Host>(ctx: &mut Ctx<'_, H>, args: GetArgs) -> Result<i32> {
     let terminal = ctx.host.stdout_is_terminal();
     let printing = args.to_file.is_none() && !args.fingerprint;
     if printing && terminal && !args.reveal {
-        return Err(CliError::interaction(
-            "stdout is a terminal; kc get prints values there only with --reveal",
-        )
-        .with_hint(
-            "pass it on without printing: kc exec --env VAR=NAME -- cmd, or VAR=\"$(kc get NAME)\" cmd",
-        ));
+        return Err(CliError::interaction(tr!(
+            "stdout is a terminal; kc get prints values there only with --reveal"
+        ))
+        .with_hint(tr!(
+            "pass it on without printing: kc exec --env VAR=NAME -- cmd, or VAR=\"$(kc get NAME)\" cmd"
+        )));
     }
     let Some(value) = ctx.store.get(name.as_str())? else {
         return Err(not_found(&name));
@@ -94,12 +126,21 @@ pub(super) fn get<H: Host>(ctx: &mut Ctx<'_, H>, args: GetArgs) -> Result<i32> {
         return Ok(exit::OK);
     }
     if let Some(path) = &args.to_file {
-        write_secret_file(path, value.as_bytes())
-            .map_err(|e| CliError::failure(format!("can't write {}: {e}", path.display())))?;
+        write_secret_file(path, value.as_bytes()).map_err(|e| {
+            CliError::failure(tr!(
+                "can't write {path}: {error}",
+                path = path.display(),
+                error = e
+            ))
+        })?;
         say!(
             ctx,
-            "Wrote {name} to {} (readable only by you).",
-            path.display()
+            "{}",
+            tr!(
+                "Wrote {name} to {path} (readable only by you).",
+                name = name,
+                path = path.display()
+            )
         );
         return Ok(exit::OK);
     }
@@ -123,13 +164,15 @@ pub(super) fn exec<H: Host>(ctx: &mut Ctx<'_, H>, args: ExecArgs) -> Result<i32>
     let mut vars = HashSet::new();
     for spec in &args.env {
         let (var, name) = spec.split_once('=').ok_or_else(|| {
-            CliError::usage("--env takes VAR=NAME, the variable and the item name (not shown)")
+            CliError::usage(tr!(
+                "--env takes VAR=NAME, the variable and the item name (not shown)"
+            ))
         })?;
         if !is_env_var_name(var) {
-            return Err(CliError::usage(
+            return Err(CliError::usage(tr!(
                 "invalid variable name in --env VAR=NAME (not shown): use letters, digits and \
-                 _, not starting with a digit",
-            ));
+                 _, not starting with a digit"
+            )));
         }
         let name = item_name(name).map_err(|e| e.context("--env VAR=NAME"))?;
         // Windows variable names ignore case: TOKEN and token are one variable there.
@@ -139,14 +182,14 @@ pub(super) fn exec<H: Host>(ctx: &mut Ctx<'_, H>, args: ExecArgs) -> Result<i32>
             var.to_owned()
         };
         if !vars.insert(key) {
-            return Err(CliError::usage(format!("--env sets {var} twice")));
+            return Err(CliError::usage(tr!("--env sets {var} twice", var = var)));
         }
         wanted.push((var.to_owned(), name));
     }
     let (program, rest) = args
         .command
         .split_first()
-        .ok_or_else(|| CliError::usage("missing the command to run after --"))?;
+        .ok_or_else(|| CliError::usage(tr!("missing the command to run after --")))?;
     let mut command = Process::new(program);
     command.args(rest);
     for (var, name) in &wanted {
@@ -154,8 +197,9 @@ pub(super) fn exec<H: Host>(ctx: &mut Ctx<'_, H>, args: ExecArgs) -> Result<i32>
             return Err(not_found(name));
         };
         if value.as_bytes().contains(&0) {
-            return Err(CliError::usage(format!(
-                "{name} contains a NUL byte, which an environment variable can't hold"
+            return Err(CliError::usage(tr!(
+                "{name} contains a NUL byte, which an environment variable can't hold",
+                name = name
             )));
         }
         command.env(var, env_value(name, value.into_zeroizing())?);
@@ -175,8 +219,9 @@ fn env_value(_name: &ItemName, value: Zeroizing<Vec<u8>>) -> Result<OsString> {
 fn env_value(name: &ItemName, value: Zeroizing<Vec<u8>>) -> Result<OsString> {
     match std::str::from_utf8(&value) {
         Ok(text) => Ok(OsString::from(text)),
-        Err(_) => Err(CliError::usage(format!(
-            "{name} isn't UTF-8 text, which Windows environment variables need"
+        Err(_) => Err(CliError::usage(tr!(
+            "{name} isn't UTF-8 text, which Windows environment variables need",
+            name = name
         ))),
     }
 }
@@ -185,11 +230,11 @@ pub(super) fn list<H: Host>(ctx: &mut Ctx<'_, H>, args: ListArgs) -> Result<i32>
     let items = ctx.store.list()?;
     if args.json {
         let mut json = serde_json::to_vec_pretty(&items)
-            .map_err(|e| CliError::failure(format!("can't encode the list: {e}")))?;
+            .map_err(|e| CliError::failure(tr!("can't encode the list: {error}", error = e)))?;
         json.push(b'\n');
         ctx.emit(&json)?;
     } else if items.is_empty() {
-        say!(ctx, "No items. Add one with `kc set NAME`.");
+        say!(ctx, "{}", tr!("No items. Add one with `kc set NAME`."));
     } else {
         let table = format_table(&items);
         ctx.emit(table.as_bytes())?;
@@ -197,17 +242,29 @@ pub(super) fn list<H: Host>(ctx: &mut Ctx<'_, H>, args: ListArgs) -> Result<i32>
     if args.verify {
         let drift = ctx.store.verify()?;
         if drift.is_clean() {
-            say!(ctx, "The metadata index matches the keychain.");
+            say!(ctx, "{}", tr!("The metadata index matches the keychain."));
         } else {
             for info in &drift.stale {
-                say!(ctx, "index entry without a keychain item: {}", info.name);
+                say!(
+                    ctx,
+                    "{}",
+                    tr!(
+                        "index entry without a keychain item: {name}",
+                        name = info.name
+                    )
+                );
             }
             for name in &drift.unindexed {
-                say!(ctx, "keychain item without index metadata: {name}");
+                say!(
+                    ctx,
+                    "{}",
+                    tr!("keychain item without index metadata: {name}", name = name)
+                );
             }
             say!(
                 ctx,
-                "`kc doctor --reindex` rebuilds the index from the keychain."
+                "{}",
+                tr!("`kc doctor --reindex` rebuilds the index from the keychain.")
             );
         }
     }
@@ -216,16 +273,18 @@ pub(super) fn list<H: Host>(ctx: &mut Ctx<'_, H>, args: ListArgs) -> Result<i32>
 
 fn origin_text(origin: &Origin) -> String {
     match origin {
-        Origin::Local => "set here".into(),
+        Origin::Local => tr!("set here"),
         Origin::Adopted { service, account } => match account {
-            Some(account) => format!(
-                "adopted from {} / {}",
-                printable(service),
-                printable(account)
+            Some(account) => tr!(
+                "adopted from {service} / {account}",
+                service = printable(service),
+                account = printable(account)
             ),
-            None => format!("adopted from {}", printable(service)),
+            None => tr!("adopted from {service}", service = printable(service)),
         },
-        Origin::Received { from_device } => format!("from {}", printable(from_device)),
+        Origin::Received { from_device } => {
+            tr!("from {device}", device = printable(from_device))
+        }
         Origin::Unknown => "-".into(),
     }
 }
@@ -247,19 +306,21 @@ fn format_table(items: &[ItemInfo]) -> String {
             ]
         })
         .collect();
-    let header = ["NAME", "KIND", "ORIGIN", "UPDATED"];
-    let mut widths = header.map(str::len);
+    // The table is for people (`--json` is for programs): the headers and the origin
+    // words are translated, so widths are counted in terminal columns.
+    let header = [tr!("NAME"), tr!("KIND"), tr!("ORIGIN"), tr!("UPDATED")];
+    let mut widths = header.each_ref().map(|h| display_width(h));
     for row in &rows {
         for (w, cell) in widths.iter_mut().zip(row) {
-            *w = (*w).max(cell.chars().count());
+            *w = (*w).max(display_width(cell));
         }
     }
     let mut out = String::new();
-    for row in std::iter::once(header.map(String::from)).chain(rows) {
+    for row in std::iter::once(header).chain(rows) {
         let line = row
             .iter()
             .zip(widths)
-            .map(|(cell, w)| format!("{cell:<w$}"))
+            .map(|(cell, w)| pad_to(cell, w))
             .collect::<Vec<_>>()
             .join("  ");
         out.push_str(line.trim_end());
@@ -274,8 +335,11 @@ pub(super) fn rm<H: Host>(ctx: &mut Ctx<'_, H>, args: RmArgs) -> Result<i32> {
         if !ctx.store.exists(name.as_str())? {
             return Err(not_found(&name));
         }
-        if !ctx.confirm(&format!("Delete {name} and its previous value?"), false)? {
-            say!(ctx, "Nothing deleted.");
+        if !ctx.confirm(
+            &tr!("Delete {name} and its previous value?", name = name),
+            false,
+        )? {
+            say!(ctx, "{}", tr!("Nothing deleted."));
             return Ok(exit::PARTIAL);
         }
     }
@@ -284,7 +348,7 @@ pub(super) fn rm<H: Host>(ctx: &mut Ctx<'_, H>, args: RmArgs) -> Result<i32> {
         ctx.store.delete(name.as_str())?
     };
     if deleted {
-        say!(ctx, "Deleted {name}.");
+        say!(ctx, "{}", tr!("Deleted {name}.", name = name));
         Ok(exit::OK)
     } else {
         Err(not_found(&name))
@@ -299,7 +363,11 @@ pub(super) fn restore<H: Host>(ctx: &mut Ctx<'_, H>, args: NameArgs) -> Result<i
     }
     say!(
         ctx,
-        "Restored the previous value of {name}. Run `kc restore {name}` again to undo."
+        "{}",
+        tr!(
+            "Restored the previous value of {name}. Run `kc restore {name}` again to undo.",
+            name = name
+        )
     );
     Ok(exit::OK)
 }
@@ -308,7 +376,9 @@ pub(super) fn adopt<H: Host>(ctx: &mut Ctx<'_, H>, args: AdoptArgs) -> Result<i3
     let name = match &args.as_name {
         Some(name) => item_name(name)?,
         None => ItemName::new(&args.service).map_err(|_| {
-            CliError::usage("the service isn't a valid item name; choose one with --as NAME")
+            CliError::usage(tr!(
+                "the service isn't a valid item name; choose one with --as NAME"
+            ))
         })?,
     };
     let outcome = {
@@ -319,19 +389,32 @@ pub(super) fn adopt<H: Host>(ctx: &mut Ctx<'_, H>, args: AdoptArgs) -> Result<i3
     match outcome.change {
         Change::Created => say!(
             ctx,
-            "Adopted it as {name}. The original entry is unchanged."
+            "{}",
+            tr!(
+                "Adopted it as {name}. The original entry is unchanged.",
+                name = name
+            )
         ),
         Change::Updated => say!(
             ctx,
-            "Adopted it as {name}, replacing its value (`kc restore {name}` brings that back)."
+            "{}",
+            tr!(
+                "Adopted it as {name}, replacing its value (`kc restore {name}` brings that back).",
+                name = name
+            )
         ),
-        Change::Unchanged => say!(ctx, "{name} already has this value."),
+        Change::Unchanged => say!(
+            ctx,
+            "{}",
+            tr!("{name} already has this value.", name = name)
+        ),
     }
     Ok(exit::OK)
 }
 
 pub(super) fn not_found(name: &ItemName) -> CliError {
-    CliError::not_found(format!("no item named {name}")).with_hint("`kc list` shows the items")
+    CliError::not_found(tr!("no item named {name}", name = name))
+        .with_hint(tr!("`kc list` shows the items"))
 }
 
 #[cfg(test)]

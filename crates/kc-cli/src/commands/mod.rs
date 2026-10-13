@@ -13,8 +13,8 @@ mod transfer;
 use std::ffi::OsString;
 use std::fmt;
 
-use clap::Parser as _;
 use clap::error::{ContextKind, ErrorKind};
+use clap::{CommandFactory as _, FromArgMatches as _};
 use kc_proto::Label;
 use kc_wire::exit;
 use zeroize::Zeroizing;
@@ -23,6 +23,7 @@ use crate::cli::{Cli, Command};
 use crate::console::{Console as _, PromptError};
 use crate::error::{CliError, Result};
 use crate::host::Host;
+use crate::i18n::tr;
 use crate::keychain::Keychain;
 use crate::policy::{self, Interactivity, Policy};
 use crate::settings::{self, ENV_RELAY, RelayUrl, Settings};
@@ -37,7 +38,15 @@ macro_rules! say {
 pub(crate) use say;
 
 pub(crate) async fn run<H: Host>(host: &mut H, args: impl IntoIterator<Item = OsString>) -> i32 {
-    let cli = match Cli::try_parse_from(args) {
+    let lang = crate::i18n::choose(host);
+    crate::i18n::scope(lang, run_in_language(host, args)).await
+}
+
+async fn run_in_language<H: Host>(host: &mut H, args: impl IntoIterator<Item = OsString>) -> i32 {
+    let parsed = crate::i18n::localize(Cli::command())
+        .try_get_matches_from(args)
+        .and_then(|m| Cli::from_arg_matches(&m));
+    let cli = match parsed {
         Ok(cli) => cli,
         Err(e) => return report_parse_error(host, &e),
     };
@@ -129,7 +138,10 @@ impl<H: Host> Ctx<'_, H> {
         match out.write_all(data).and_then(|()| out.flush()) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
-            Err(e) => Err(CliError::failure(format!("can't write to stdout: {e}"))),
+            Err(e) => Err(CliError::failure(tr!(
+                "can't write to stdout: {error}",
+                error = e
+            ))),
         }
     }
 
@@ -164,10 +176,13 @@ impl<H: Host> Ctx<'_, H> {
             return Ok(());
         }
         let reasons = self.policy.interactivity.reasons().join(", ");
-        Err(CliError::interaction(
-            "this needs a person at a terminal, and kc never prompts without one",
-        )
-        .with_hint(format!("kc runs non-interactively here ({reasons})")))
+        Err(CliError::interaction(tr!(
+            "this needs a person at a terminal, and kc never prompts without one"
+        ))
+        .with_hint(tr!(
+            "kc runs non-interactively here ({reasons})",
+            reasons = reasons
+        )))
     }
 
     /// Asks yes/no. Esc counts as no; Ctrl-C cancels the command.
@@ -212,19 +227,44 @@ impl<H: Host> Ctx<'_, H> {
 pub(crate) fn prompt_failed(e: PromptError) -> CliError {
     match e {
         PromptError::Cancelled | PromptError::Interrupted => CliError::cancelled(),
-        PromptError::Failed(why) => {
-            CliError::interaction(format!("can't prompt: {why}")).with_hint("pass --no-input")
-        }
+        PromptError::Failed(why) => CliError::interaction(tr!("can't prompt: {why}", why = why))
+            .with_hint(tr!("pass --no-input")),
     }
 }
 
-/// `"1 item"`, `"2 items"`.
-pub(crate) fn plural(n: usize, one: &str) -> String {
-    if n == 1 {
-        format!("{n} {one}")
-    } else {
-        format!("{n} {one}s")
-    }
+/// One of two whole messages by count, each already translated:
+/// `plural_tr(n, tr!("Sent {n} item.", n = n), tr!("Sent {n} items.", n = n))`.
+/// Languages without plural forms translate both the same.
+pub(crate) fn plural_tr(n: usize, one: String, other: String) -> String {
+    if n == 1 { one } else { other }
+}
+
+/// Columns `s` takes in a terminal: 2 for wide (CJK, Hangul, full-width) characters, 0
+/// for combining marks and zero-width characters, 1 for the rest.
+pub(crate) fn display_width(s: &str) -> usize {
+    s.chars()
+        .map(|c| match u32::from(c) {
+            0x0300..=0x036F | 0x200B..=0x200F | 0xFE00..=0xFE0F => 0,
+            0x1100..=0x115F
+            | 0x2E80..=0x303E
+            | 0x3041..=0x33FF
+            | 0x3400..=0x4DBF
+            | 0x4E00..=0x9FFF
+            | 0xA000..=0xA4CF
+            | 0xAC00..=0xD7A3
+            | 0xF900..=0xFAFF
+            | 0xFE30..=0xFE4F
+            | 0xFF00..=0xFF60
+            | 0xFFE0..=0xFFE6
+            | 0x20000..=0x3FFFD => 2,
+            _ => 1,
+        })
+        .sum()
+}
+
+/// `s` padded with spaces to `width` columns (see [`display_width`]).
+pub(crate) fn pad_to(s: &str, width: usize) -> String {
+    format!("{s}{}", " ".repeat(width.saturating_sub(display_width(s))))
 }
 
 /// clap's own messages repeat what was typed, which could be a value pasted in the wrong
@@ -244,61 +284,78 @@ fn report_parse_error<H: Host>(host: &mut H, err: &clap::Error) -> i32 {
     }
     let mut text = format!("kc: {}", parse_error_message(err));
     if let Some(usage) = err.get(ContextKind::Usage) {
+        // clap writes its own "Usage:" heading here; the help pages get theirs from i18n.
+        let usage = usage
+            .to_string()
+            .replacen("Usage:", crate::i18n::lookup("Usage:"), 1);
         text.push_str(&format!("\n\n{usage}"));
     }
-    text.push_str("\n\nFor more information, try 'kc --help'.");
+    text.push_str("\n\n");
+    text.push_str(&tr!("For more information, try 'kc --help'."));
     let _ = writeln!(host.console().stderr(), "{text}");
     exit::USAGE
 }
 
 fn parse_error_message(err: &clap::Error) -> String {
     let ctx = |kind| err.get(kind).map(ToString::to_string);
-    let ours = |kind| ctx(kind).unwrap_or_else(|| "an argument".into());
+    let ours = |kind| ctx(kind).unwrap_or_else(|| tr!("an argument"));
     let suggestion = ctx(ContextKind::SuggestedArg)
         .or_else(|| ctx(ContextKind::SuggestedSubcommand))
-        .map(|s| format!(" (did you mean '{s}'?)"))
+        .map(|s| tr!(" (did you mean '{suggested}'?)", suggested = s))
         .unwrap_or_default();
     match err.kind() {
         ErrorKind::UnknownArgument => match ctx(ContextKind::InvalidArg) {
-            Some(arg) if looks_like_option(&arg) => format!("unknown option '{arg}'{suggestion}"),
-            _ => format!(
+            Some(arg) if looks_like_option(&arg) => tr!(
+                "unknown option '{arg}'{suggestion}",
+                arg = arg,
+                suggestion = suggestion
+            ),
+            _ => tr!(
                 "unexpected argument (not shown, in case it is a secret){suggestion}. Values \
-                 are never taken from arguments"
+                 are never taken from arguments",
+                suggestion = suggestion
             ),
         },
         ErrorKind::InvalidSubcommand => match ctx(ContextKind::InvalidSubcommand) {
-            Some(cmd) if looks_like_word(&cmd) => format!("unknown command '{cmd}'{suggestion}"),
-            _ => format!("unknown command (not shown){suggestion}"),
+            Some(cmd) if looks_like_word(&cmd) => tr!(
+                "unknown command '{command}'{suggestion}",
+                command = cmd,
+                suggestion = suggestion
+            ),
+            _ => tr!(
+                "unknown command (not shown){suggestion}",
+                suggestion = suggestion
+            ),
         },
         ErrorKind::InvalidValue | ErrorKind::ValueValidation => {
-            let valid = ctx(ContextKind::ValidValue)
-                .map(|v| format!("; possible values: {v}"))
-                .unwrap_or_default();
-            format!(
-                "invalid value (not shown) for {}{valid}",
-                ours(ContextKind::InvalidArg)
-            )
+            let arg = ours(ContextKind::InvalidArg);
+            match ctx(ContextKind::ValidValue) {
+                Some(valid) => tr!(
+                    "invalid value (not shown) for {arg}; possible values: {valid}",
+                    arg = arg,
+                    valid = valid
+                ),
+                None => tr!("invalid value (not shown) for {arg}", arg = arg),
+            }
         }
         ErrorKind::MissingRequiredArgument => {
-            format!("missing {}", ours(ContextKind::InvalidArg))
+            tr!("missing {arg}", arg = ours(ContextKind::InvalidArg))
         }
-        ErrorKind::ArgumentConflict => format!(
-            "{} can't be used with {}",
-            ours(ContextKind::InvalidArg),
-            ours(ContextKind::PriorArg)
+        ErrorKind::ArgumentConflict => tr!(
+            "{arg} can't be used with {other}",
+            arg = ours(ContextKind::InvalidArg),
+            other = ours(ContextKind::PriorArg)
         ),
-        ErrorKind::MissingSubcommand => "missing command".into(),
-        ErrorKind::InvalidUtf8 => "arguments must be valid UTF-8".into(),
+        ErrorKind::MissingSubcommand => tr!("missing command"),
+        ErrorKind::InvalidUtf8 => tr!("arguments must be valid UTF-8"),
         ErrorKind::NoEquals
         | ErrorKind::TooManyValues
         | ErrorKind::TooFewValues
-        | ErrorKind::WrongNumberOfValues => {
-            format!(
-                "wrong number of values for {}",
-                ours(ContextKind::InvalidArg)
-            )
-        }
-        _ => "invalid arguments".into(),
+        | ErrorKind::WrongNumberOfValues => tr!(
+            "wrong number of values for {arg}",
+            arg = ours(ContextKind::InvalidArg)
+        ),
+        _ => tr!("invalid arguments"),
     }
 }
 
@@ -319,6 +376,8 @@ fn looks_like_word(s: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use clap::Parser as _;
+
     use super::*;
 
     fn message(args: &[&str]) -> String {

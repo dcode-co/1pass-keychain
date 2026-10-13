@@ -44,6 +44,8 @@ toml = "1"
 sha2 = "0.10"
 gethostname = "1"
 humantime = "2"
+# The OS language when no locale variable is set (macOS, Windows). MIT OR Apache-2.0.
+sys-locale = "0.3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
