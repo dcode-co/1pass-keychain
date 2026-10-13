@@ -1496,7 +1496,7 @@ dependencies = [
 
 [[package]]
 name = "kc-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "block2",
@@ -1535,7 +1535,7 @@ dependencies = [
 
 [[package]]
 name = "kc-proto"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "chacha20poly1305",
@@ -1558,7 +1558,7 @@ dependencies = [
 
 [[package]]
 name = "kc-relay"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1586,7 +1586,7 @@ dependencies = [
 
 [[package]]
 name = "kc-store"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "apple-native-keyring-store",
  "directories",
@@ -1610,7 +1610,7 @@ dependencies = [
 
 [[package]]
 name = "kc-sync"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "rand",
  "serde",
@@ -1620,7 +1620,7 @@ dependencies = [
 
 [[package]]
 name = "kc-wire"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
