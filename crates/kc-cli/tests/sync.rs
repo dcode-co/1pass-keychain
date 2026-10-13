@@ -55,9 +55,22 @@ async fn pump(a: &Device<MemoryRelay>, b: &Device<MemoryRelay>) {
 }
 async fn enroll(a: &Device<MemoryRelay>, b: &Device<MemoryRelay>) {
     a.set("KEY", b"fake-initial-secret").await;
-    a.run(&["sync", "add", "KEY", "--peers", "bravo"], human(vec![]))
-        .await
-        .expect(8);
+    let out = a
+        .run(&["sync", "add", "KEY", "--peers", "bravo"], human(vec![]))
+        .await;
+    out.expect(8);
+    assert!(
+        out.stderr
+            .contains("Added KEY to sync and offered it to 1 device;"),
+        "{}",
+        out.stderr
+    );
+    assert!(
+        out.stderr
+            .contains("Still pending: waiting for review on other devices"),
+        "{}",
+        out.stderr
+    );
     pump(a, b).await;
     assert!(b.value("KEY").is_none());
     assert_eq!(state(b)["candidates"].as_object().unwrap().len(), 1);
@@ -65,6 +78,11 @@ async fn enroll(a: &Device<MemoryRelay>, b: &Device<MemoryRelay>) {
         .run(&["sync", "review"], human(vec![Answer::Select(0)]))
         .await;
     assert!([0, 8].contains(&out.code), "{}", out.stderr);
+    assert!(
+        out.stderr.contains("Accepted KEY from alpha."),
+        "{}",
+        out.stderr
+    );
     assert_eq!(
         out.prompts
             .iter()
@@ -101,6 +119,13 @@ async fn add_offer_review_local_confirmation_and_accept_on_both_sides() {
     let (a, b, _) = devices().await;
     enroll(&a, &b).await;
     assert_eq!(a.value("KEY"), b.value("KEY"));
+    let out = a.run(&["sync", "status"], Run::agent()).await;
+    out.expect(0);
+    let text = out.stdout_text();
+    assert!(text.contains("KEY  in sync  "), "{text}");
+    assert!(text.contains("  bravo\n"), "{text}");
+    assert!(text.contains("device bravo: ok\n"), "{text}");
+    assert!(!text.contains('{') && !text.contains('['), "{text}");
     a.run(&["sync", "status", "--json"], Run::agent())
         .await
         .expect(0);
@@ -156,9 +181,15 @@ async fn concurrent_changes_conflict_resolve_is_held_then_converges() {
     pump(&a, &b).await;
     assert_eq!(state(&a)["items"]["KEY"]["conflict"], true);
     assert_eq!(state(&b)["items"]["KEY"]["conflict"], true);
-    a.run(&["sync", "resolve", "KEY", "--keep", "mine"], human(vec![]))
-        .await
-        .expect(8);
+    let out = a
+        .run(&["sync", "resolve", "KEY", "--keep", "mine"], human(vec![]))
+        .await;
+    out.expect(8);
+    assert!(
+        out.stderr.contains("Resolved KEY, keeping this device;"),
+        "{}",
+        out.stderr
+    );
     pump(&a, &b).await;
     assert_eq!(b.value("KEY").unwrap(), b"fake-bravo-change");
     b.run(&["sync", "review"], human(vec![Answer::Select(0)]))

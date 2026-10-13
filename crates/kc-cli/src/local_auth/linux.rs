@@ -57,8 +57,13 @@ fn outcome(code: Option<i32>, stderr: &[u8]) -> LocalAuthOutcome {
     match code {
         Some(0) => LocalAuthOutcome::Confirmed,
         // pkcheck(1): 1 = not authorized, 3 = dialog dismissed. 2 means user interaction was
-        // needed but no authentication agent could ask, which falls to Unavailable below.
+        // needed but no authentication agent could ask: Unavailable, named so the hint can say so.
         Some(1 | 3) => LocalAuthOutcome::Denied,
+        Some(2) => LocalAuthOutcome::Unavailable(format!(
+            "{}: {}",
+            super::NO_POLKIT_AGENT,
+            String::from_utf8_lossy(stderr).trim()
+        )),
         _ => LocalAuthOutcome::Unavailable(format!(
             "pkcheck failed (exit {code:?}): {}",
             String::from_utf8_lossy(stderr).trim()
@@ -140,5 +145,21 @@ mod tests {
                 result => panic!("unexpected outcome: {result:?}"),
             }
         }
+    }
+
+    #[test]
+    fn exit_2_is_a_missing_agent() {
+        let stderr = b"Authorization requires authentication but no agent is available.\n";
+        match outcome(Some(2), stderr) {
+            LocalAuthOutcome::Unavailable(message) => {
+                assert!(message.starts_with(super::super::NO_POLKIT_AGENT));
+                assert!(message.ends_with("no agent is available."));
+            }
+            result => panic!("unexpected outcome: {result:?}"),
+        }
+        assert!(!matches!(
+            outcome(Some(127), stderr),
+            LocalAuthOutcome::Unavailable(m) if m.starts_with(super::super::NO_POLKIT_AGENT)
+        ));
     }
 }

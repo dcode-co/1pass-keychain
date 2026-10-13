@@ -32,14 +32,16 @@ pub(crate) fn state_error() -> CliError {
     ))
 }
 pub(crate) fn human<H: Host>(ctx: &mut Ctx<'_, H>, reason: &str) -> Result<()> {
-    if !ctx.interactive() || ctx.host.local_confirm(reason) != LocalAuthOutcome::Confirmed {
-        return Err(
-            CliError::interaction(tr!("Sync needs local confirmation.")).with_hint(tr!(
-                "Run this command at a terminal and confirm in the operating system."
-            )),
-        );
-    }
-    Ok(())
+    let hint = if !ctx.interactive() {
+        tr!("Run this command at a terminal and confirm in the operating system.")
+    } else {
+        match ctx.host.local_confirm(reason) {
+            LocalAuthOutcome::Confirmed => return Ok(()),
+            // Unavailable carries why (e.g. no polkit agent); say so instead of the generic hint.
+            outcome => outcome.hint(),
+        }
+    };
+    Err(CliError::interaction(tr!("Sync needs local confirmation.")).with_hint(hint))
 }
 pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
