@@ -130,6 +130,29 @@ desktop$ kc inbox                            # guarda lo que llegó (se conserva
 `kc peers rm LABEL` desempareja un dispositivo; si pierdes una máquina, ejecútalo en las demás.
 Consulta [docs/SECURITY.md](docs/SECURITY.md) para saber cuándo usar `kc device rotate`.
 
+## Sincronización
+
+Sincroniza los elementos que elijas entre dispositivos emparejados. **No se
+sincroniza nada por defecto.** Sustituye `NAME` por el nombre de un elemento existente:
+
+```console
+$ kc sync add NAME          # incluye el elemento y lo propone a los otros dispositivos
+$ kc sync                   # ejecútalo en ambos dispositivos para intercambiar cambios
+$ kc sync review            # revisa propuestas y cambios retenidos en el receptor
+$ kc sync status            # muestra el estado y las huellas locales, nunca los valores
+```
+
+En esta versión, toda sobrescritura remota queda pendiente de revisión. Cada paso de
+sincronización que aplica un valor pide confirmación local mediante Touch ID
+(o la contraseña del sistema), Windows Hello o polkit. Incluir un elemento también
+requiere confirmación. Las escrituras locales normales pueden poner cambios en cola,
+pero no autorizan sobrescrituras en otros dispositivos. Los conflictos conservan los
+valores candidatos: elige con `kc sync resolve NAME --keep mine` o
+`kc sync resolve NAME --keep LABEL`. Los demás dispositivos también revisan el resultado.
+`kc sync freeze` detiene la aplicación de cambios entrantes sin pedir confirmación;
+`kc sync unfreeze` requiere confirmación del sistema. El código de salida 8 indica
+trabajo pendiente o bloqueado. Consulta los [límites de seguridad](docs/SECURITY.md).
+
 ## Comandos
 
 | Comando | Qué hace |
@@ -141,6 +164,7 @@ Consulta [docs/SECURITY.md](docs/SECURITY.md) para saber cuándo usar `kc device
 | `kc adopt --service S [--account A] [--as NAME]` | copia un elemento existente del llavero a kc |
 | `kc receive` / `kc send [NAMES…]` | mueve elementos con un código de un solo uso |
 | `kc pair`, `kc peers`, `kc inbox`, `kc device` | dispositivos recordados |
+| `kc sync` | sincroniza elementos seleccionados con dispositivos emparejados |
 | `kc doctor` | comprueba el llavero, el relé y la configuración |
 
 ## Solución de problemas

@@ -130,6 +130,28 @@ desktop$ kc inbox                            # stores what arrived (kept up to 7
 `kc peers rm LABEL` unpairs a device; run it on your other machines if one is
 lost. See [docs/SECURITY.md](docs/SECURITY.md) for when to use `kc device rotate`.
 
+## Sync
+
+Sync keeps selected items shared between paired devices. **Nothing syncs by
+default.** Replace `NAME` with an existing item name:
+
+```console
+$ kc sync add NAME          # enroll and offer to paired devices
+$ kc sync                   # run on both devices to exchange changes
+$ kc sync review            # on the receiving device: review proposals and held changes
+$ kc sync status            # show state and local fingerprints, never values
+```
+
+This release holds every remote overwrite for review. Every sync step that applies
+a value asks for local OS confirmation: Touch ID (or the OS password fallback),
+Windows Hello, or polkit. Enrollment also requires this confirmation; ordinary
+local writes can queue changes without authorizing an overwrite elsewhere.
+Conflicts preserve candidate values: use `kc sync resolve NAME --keep mine`
+or `kc sync resolve NAME --keep LABEL` to choose a version. Other devices still
+review the result. `kc sync freeze` holds incoming changes without confirmation;
+`kc sync unfreeze` requires OS confirmation. Exit 8 means pending or blocked
+work remains. See [the security limits](docs/SECURITY.md).
+
 ## Commands
 
 | Command | What it does |
@@ -141,6 +163,7 @@ lost. See [docs/SECURITY.md](docs/SECURITY.md) for when to use `kc device rotate
 | `kc adopt --service S [--account A] [--as NAME]` | copy an existing keychain item into kc |
 | `kc receive` / `kc send [NAMES…]` | move items with a one-time code |
 | `kc pair`, `kc peers`, `kc inbox`, `kc device` | remembered devices |
+| `kc sync` | sync selected items with paired devices |
 | `kc doctor` | check the keychain, the relay and the configuration |
 
 ## Troubleshooting

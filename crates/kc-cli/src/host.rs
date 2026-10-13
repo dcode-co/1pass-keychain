@@ -17,6 +17,7 @@ use crate::console::{Console, TermConsole};
 use crate::error::{CliError, Result};
 use crate::http::HttpRelay;
 use crate::i18n::tr;
+use crate::local_auth::{self, LocalAuthOutcome};
 use crate::settings::RelayUrl;
 
 pub trait Host {
@@ -24,6 +25,15 @@ pub trait Host {
     type Console: Console;
 
     fn console(&mut self) -> &mut Self::Console;
+    /// OS user presence outside the terminal (sync design §3.1).
+    fn local_confirm(&mut self, _reason: &str) -> LocalAuthOutcome {
+        LocalAuthOutcome::Unavailable("no local confirmation on this host".into())
+    }
+    /// Test injection after a sync transaction's keychain write; production never interrupts.
+    #[doc(hidden)]
+    fn sync_interrupt_after_write(&mut self) -> bool {
+        false
+    }
     /// A process environment variable (`CI`, `CLAUDECODE`, `KC_RELAY`).
     fn env_var(&self, key: &str) -> Option<OsString>;
     fn stdin_is_terminal(&self) -> bool;
@@ -81,6 +91,10 @@ impl Host for RealHost {
 
     fn console(&mut self) -> &mut TermConsole {
         &mut self.console
+    }
+
+    fn local_confirm(&mut self, reason: &str) -> LocalAuthOutcome {
+        local_auth::confirm(reason)
     }
 
     fn env_var(&self, key: &str) -> Option<OsString> {

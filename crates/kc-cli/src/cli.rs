@@ -60,6 +60,8 @@ pub enum Command {
     Device(DeviceArgs),
     /// Check the keychain, the relay and the configuration
     Doctor(DoctorArgs),
+    /// Synchronize selected items with paired devices
+    Sync(SyncArgs),
 }
 
 #[derive(Debug, Args)]
@@ -361,4 +363,66 @@ mod tests {
         assert_eq!(cli.relay.as_deref(), Some("http://127.0.0.1:1"));
         assert!(cli.allow_http);
     }
+}
+
+#[derive(Debug, Args)]
+pub struct SyncArgs {
+    #[command(subcommand)]
+    pub command: Option<SyncCommand>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SyncCommand {
+    /// Show synchronization state without values
+    Status {
+        /// Print JSON
+        #[arg(long)]
+        json: bool,
+        /// Confirm the current value as the recovery checkpoint
+        #[arg(long, value_name = "NAME")]
+        confirm_checkpoint: Option<String>,
+    },
+    /// Add items and offer them to paired devices
+    Add {
+        names: Vec<String>,
+        #[arg(long, value_delimiter = ',')]
+        peers: Vec<String>,
+    },
+    /// Offer selected sync items again
+    Offer {
+        names: Vec<String>,
+        #[arg(long, value_delimiter = ',')]
+        peers: Vec<String>,
+    },
+    /// Remove items from this device's sync set, keeping their values
+    Rm {
+        #[arg(required = true)]
+        names: Vec<String>,
+    },
+    /// Manage the paired devices used for sync
+    Peer {
+        #[command(subcommand)]
+        command: SyncPeerCommand,
+    },
+    /// Review proposals and held changes
+    Review,
+    /// Resolve a conflict with a new version
+    Resolve {
+        name: String,
+        #[arg(long)]
+        keep: String,
+    },
+    /// Restore the recovery checkpoint
+    RestoreCheckpoint { name: String },
+    /// Hold all incoming sync changes
+    Freeze,
+    /// Resume sync after local confirmation
+    Unfreeze,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SyncPeerCommand {
+    Add { label: String },
+    Rm { label: String },
+    List,
 }

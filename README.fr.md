@@ -130,6 +130,29 @@ desktop$ kc inbox                            # enregistre ce qui est arrivé (co
 `kc peers rm LABEL` supprime l'appairage d'un appareil ; si une machine est perdue, lancez-le sur vos autres machines.
 Consultez [docs/SECURITY.md](docs/SECURITY.md) pour savoir quand utiliser `kc device rotate`.
 
+## Synchronisation
+
+Synchronisez les éléments choisis entre appareils appairés. **Rien n’est
+synchronisé par défaut.** Remplacez `NAME` par le nom d’un élément existant :
+
+```console
+$ kc sync add NAME          # inscrit l’élément et le propose aux autres appareils
+$ kc sync                   # à lancer sur les deux appareils pour échanger les modifications
+$ kc sync review            # examine les propositions et modifications en attente sur le destinataire
+$ kc sync status            # affiche l’état et les empreintes locales, jamais les valeurs
+```
+
+Dans cette version, tout écrasement distant attend une vérification humaine. Chaque étape de
+synchronisation qui applique une valeur demande une confirmation locale via Touch ID
+(ou le mot de passe du système), Windows Hello ou polkit. L’inscription d’un élément
+exige aussi cette confirmation. Les écritures locales ordinaires peuvent mettre des
+modifications en file d’attente, sans autoriser d’écrasement sur les autres appareils.
+Les valeurs en conflit sont conservées : choisissez avec `kc sync resolve NAME --keep mine`
+ou `kc sync resolve NAME --keep LABEL`. Les autres appareils doivent aussi examiner le
+résultat. `kc sync freeze` suspend l’application des modifications entrantes sans
+confirmation ; `kc sync unfreeze` exige une confirmation du système. Le code de sortie 8
+signale du travail en attente ou bloqué. Voir les [limites de sécurité](docs/SECURITY.md).
+
 ## Commandes
 
 | Commande | Rôle |
@@ -141,6 +164,7 @@ Consultez [docs/SECURITY.md](docs/SECURITY.md) pour savoir quand utiliser `kc de
 | `kc adopt --service S [--account A] [--as NAME]` | copie un élément existant du trousseau dans kc |
 | `kc receive` / `kc send [NAMES…]` | transfère des éléments avec un code à usage unique |
 | `kc pair`, `kc peers`, `kc inbox`, `kc device` | appareils mémorisés |
+| `kc sync` | synchronise les éléments choisis avec les appareils appairés |
 | `kc doctor` | vérifie le trousseau, le relais et la configuration |
 
 ## Dépannage

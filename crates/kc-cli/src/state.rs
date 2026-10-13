@@ -269,8 +269,8 @@ impl StateDir {
     /// conflict check and the write it decides on can't interleave with another kc process
     /// writing to the same keychain namespace. The keychain is shared by every config
     /// directory of the user, so the lock file lives in a per-user directory (the runtime
-    /// or cache directory), not in the config directory. Taken after `state.lock` when
-    /// both are needed, never the other way round.
+    /// or cache directory), not in the config directory. Taken before `state.lock` when
+    /// both are needed; seen.json is written after sync state.
     pub fn lock_items(&self, namespace: &str) -> Result<StateLock> {
         let file = format!("{ITEMS_LOCK_PREFIX}{namespace}.lock");
         let busy = || tr!("another kc process is writing items; try again");

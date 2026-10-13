@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
-use kc_cli::{CliError, Console, Host, HttpRelay, PromptError, RelayUrl};
+use kc_cli::{CliError, Console, Host, HttpRelay, LocalAuthOutcome, PromptError, RelayUrl};
 use kc_proto::memory_relay::MemoryRelay;
 use kc_proto::relay::{RelayApi, RelayError};
 use kc_proto::session::SessionOptions;
@@ -24,6 +24,8 @@ use kc_wire::Limits;
 use tempfile::TempDir;
 use tokio::sync::oneshot;
 use zeroize::Zeroizing;
+
+pub mod fault_relay;
 
 pub const NAMESPACE: &str = "dev.1pass.kc.test-cli";
 
@@ -186,6 +188,7 @@ pub struct Run {
     pub terminal: bool,
     pub stdout_terminal: bool,
     pub answers: Vec<Answer>,
+    pub local_auth: VecDeque<LocalAuthOutcome>,
     pub env: Vec<(String, String)>,
     pub code_tx: Option<oneshot::Sender<String>>,
 }
@@ -198,6 +201,7 @@ impl Run {
             terminal: false,
             stdout_terminal: false,
             answers: Vec::new(),
+            local_auth: VecDeque::new(),
             env: vec![("CLAUDECODE".into(), "1".into())],
             code_tx: None,
         }
@@ -210,6 +214,7 @@ impl Run {
             terminal: true,
             stdout_terminal: false,
             answers,
+            local_auth: VecDeque::new(),
             env: Vec::new(),
             code_tx: None,
         }
@@ -266,6 +271,7 @@ struct TestHost<'d, N: Net> {
     terminal: bool,
     stdout_terminal: bool,
     env: Vec<(String, String)>,
+    local_auth: VecDeque<LocalAuthOutcome>,
 }
 
 impl<N: Net> Host for TestHost<'_, N> {
@@ -274,6 +280,24 @@ impl<N: Net> Host for TestHost<'_, N> {
 
     fn console(&mut self) -> &mut TestConsole {
         &mut self.console
+    }
+
+    fn local_confirm(&mut self, reason: &str) -> LocalAuthOutcome {
+        self.console
+            .prompts
+            .push(format!("local confirmation: {reason}"));
+        self.local_auth.pop_front().unwrap_or_else(|| {
+            LocalAuthOutcome::Unavailable("no scripted local confirmation".into())
+        })
+    }
+
+    fn sync_interrupt_after_write(&mut self) -> bool {
+        if let Some(index) = self.env.iter().position(|(k, _)| k == "TEST_SYNC_CRASH") {
+            self.env.remove(index);
+            true
+        } else {
+            false
+        }
     }
 
     fn env_var(&self, key: &str) -> Option<OsString> {
@@ -367,8 +391,15 @@ impl<N: Net> Device<N> {
     fn store_with(&self, interactive: bool) -> kc_store::Result<Store> {
         match &self.keychain {
             Keychain::Memory(mem) => {
+                // Sync tests isolate virtual keychain namespaces as real devices do;
+                // unrelated test cases must not contend on one OS-wide items lock.
+                let namespace = self
+                    .env
+                    .iter()
+                    .find(|(key, _)| key == "TEST_NAMESPACE")
+                    .map_or(NAMESPACE, |(_, value)| value.as_str());
                 let cfg =
-                    StoreConfig::new(NAMESPACE, self.dir.path()).with_interactive(interactive);
+                    StoreConfig::new(namespace, self.dir.path()).with_interactive(interactive);
                 Store::open_with_memory_backend(cfg, mem)
             }
             Keychain::Os { namespace } => Store::open(
@@ -393,6 +424,7 @@ impl<N: Net> Device<N> {
             terminal: run.terminal,
             stdout_terminal: run.stdout_terminal,
             env,
+            local_auth: run.local_auth,
         };
         let argv = std::iter::once("kc")
             .chain(args.iter().copied())

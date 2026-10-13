@@ -146,6 +146,71 @@ PairOffer      { suggested_label: String, device_pk: [u8; 32], inbox_id: [u8; 16
   - `kc device rotate` creates a new key and a new inbox, deletes the old inbox and asks you to re-pair.
   - The old private key is kept for 72 h to open messages already in flight.
 
+### v2: sync-capable inbox messages
+
+The outer postcard `InboxEnvelope` has exactly the v1 fields and order above;
+only `v` changes to `2`. `suite` remains `1`. A v1 reader decodes the envelope
+and rejects version `2` **before decryption**. `seal` and `open` remain v1-only;
+`seal_v2` writes v2 and `open_any` accepts both, mapping v1 items to `Body::Items`.
+
+```text
+aad  = postcard(v: 2, suite: 1, sender_fp, recipient_fp)
+info = "kc2 inbox" || sender_fp || recipient_fp
+plaintext = pad(postcard(InboxPlain2 { v: 2, msg_id: [u8;16], sender_fp, recipient_fp,
+                                      created_at: i64, expires_at: i64, body }))
+Body = Items(Vec<Item>) | Sync(SyncMsg)
+```
+
+`enc` and `ct` are not part of AAD. HPKE auth mode and padding are unchanged.
+The inner version must equal the outer version; a mismatch returns
+`UnsupportedVersion(inner_v)`. Fingerprint, recipient, remembered-sender,
+lifetime (0 through 72 hours on receive, 1 through 72 hours on send), 5-minute
+clock skew, and replay checks are the same as v1. The encoded envelope must
+fit the 256 KiB relay limit; `open_any` checks this before decoding. Duplicate
+names in `Body::Items` reject the message as malformed. Values remain
+zeroize-on-drop `SecretBytes`, including values in `Offer` and `Op::Put`.
+
+The following field and variant orders are fixed by golden vectors:
+
+```text
+Vid         = [u8;16]
+ItemKind    = Text | File
+ChangeId    { name: ItemName, generation: u64, new_vid: Vid }
+Op          = Put { kind: ItemKind, value: bytes } | Retire
+Change      { name: ItemName, generation: u64, new_vid: Vid, parents: Vec<Vid>,
+              lineage: Vec<Vid>, op: Op, approval_ref: Option<[u8;16]> }
+AckResult   = Applied | Held | Conflict | StaleGeneration | DeferredCapacity | Rejected
+DigestEntry { name: ItemName, generation: u64, head: Vid }
+SyncMsg     = Hello { features: Vec<String>, is_reply: bool }
+            | Offer { name: ItemName, known_generation: u64, vid: Vid, lineage: Vec<Vid>, kind: ItemKind, value: bytes }
+            | Accept { name: ItemName, generation: u64 }
+            | Leave { name: ItemName, generation: u64 }
+            | Changes { changes: Vec<Change> }
+            | Ack { results: Vec<(ChangeId, AckResult)> }
+            | Digest { entries: Vec<DigestEntry> }
+            | Approvals { docs: Vec<Vec<u8>> }
+```
+
+- Postcard discriminants: `Body::Items = 0`, `Sync = 1`; `SyncMsg::Hello = 0`
+  through `Approvals = 7`; `Op::Put = 0`, `Retire = 1`; `AckResult::Applied = 0`
+  through `Rejected = 5`; `ItemKind::Text = 0`, `File = 1`.
+- v1 `Item` has no kind field. v2 sync defines `ItemKind` separately, with the
+  store's text/file presentation meanings; the v1 `Item` layout is unchanged.
+- `Vid` is 16 raw bytes in postcard and 32 hex characters in human-readable
+  formats (lowercase when written), just like `MessageId`. Fresh Vids use the
+  operating system CSPRNG. Generations use postcard's `u64` varint encoding.
+- `Change.lineage` is limited to 64 entries on decode and validation. Names
+  must be unique within a `Changes` batch. Either violation rejects the entire
+  opened message as `Malformed`. `parents` are the sender's claimed direct
+  parents; approval and application policy are outside this wire layer.
+- `Approvals` holds opaque reserved documents; this layer does not interpret them.
+- Unknown peers' v2 capabilities are probed with one `Hello`; other sync messages
+  wait for its reply. Ordinary `send --to` stays v1. Sync changes must never be
+  downgraded to v1 items. This negotiation policy is implemented above the codec.
+
+Golden vectors in `crates/kc-proto/tests/inbox_v2/fixtures` freeze both body
+postcard bytes and complete encrypted envelopes, including all enum variants.
+
 ## 5. Relay rules
 
 - **Channels:** in memory.
@@ -191,7 +256,28 @@ terminals and none of `CI`, `CLAUDECODE` or `--no-input` is set.
 | `pair`, `--remember`, `--all`, overwrite on receive or inbox | **always refused, exit 5** (`agent_code_send` doesn't change this) | allowed after showing names and peer label/SAS |
 | `receive` (shows a code) | allowed, conflicts skipped | allowed |
 
-Without a TTY, kc never prompts. It exits 5 and names the missing flags.
+For sync, **L** means confirmation by a human on the local device through
+Touch ID (or the OS password fallback), Windows Hello, or polkit. A terminal
+prompt alone is not L. Missing, denied or unavailable L returns exit 5.
+
+| Sync action | Non-interactive (agents, scripts) | Interactive |
+|---|---|---|
+| `sync`, `sync offer NAME` | allowed to queue/send changes and proposals within the already approved scope; no remote overwrite | same |
+| `sync status`, `sync status --json`, `sync peer list` | allowed; no values displayed | allowed |
+| `sync freeze` | allowed; holds incoming changes | allowed without L |
+| `sync add NAME`, `sync rm NAME`, `sync peer add LABEL`, `sync peer rm LABEL` | refused, exit 5 | L required |
+| `sync review` | refused, exit 5 | accepting proposals or held changes requires L; rejecting or leaving them for later does not |
+| `sync resolve NAME --keep mine`, `sync resolve NAME --keep LABEL`, `sync restore-checkpoint NAME` | refused, exit 5 | L required |
+| `sync status --confirm-checkpoint NAME`, `sync unfreeze` | refused, exit 5 | L required |
+
+Nothing syncs by default. Agents can create proposals and queue/send changes,
+but cannot enroll items, expand sharing scope or accept remote values. Phase 1
+holds **every remote overwrite** for human review on the receiving device;
+conflicts require explicit resolution. Even a resolution sent by another device
+cannot bypass local review. Ordinary local writes such as `set` retain the
+permissions above; their queued changes do not authorize a remote overwrite.
+
+Without a TTY, kc never prompts. Operations that require interaction exit 5.
 
 ## 7. Using values without leaking them
 
@@ -217,10 +303,17 @@ Defined in `kc_wire::exit`.
 | 5 | interaction required |
 | 6 | relay unavailable or rate limited |
 | 7 | auth failed (bad code or MAC, tampering, replay) |
-| 8 | partial |
+| 8 | partial; for sync, work remains pending or blocked (proposals, held changes, conflicts, queued delivery, re-offer needed, frozen state, capacity, quarantine or a tripped limit) |
 | 9 | expired |
 
-## 9. Reserved for phase 2
+## 9. Reserved for later phases
+
+Signed sync approvals (A/A+) and FIDO2 verification are planned for Phase 1b;
+the 1pass.dev phone approver is planned for Phase 2b. None ships in this
+release. Phase 1 ignores signed approval documents and never uses them to
+authorize an automatic overwrite.
+
+The following approval lock is also reserved for phase 2:
 
 `/v1/locks/*`: an approval lock for selected items. A key share is held by the
 relay and released only after an authenticator code (TOTP) or a passkey

@@ -129,6 +129,26 @@ desktop$ kc inbox                            # 儲存收到的內容（最多保
 `kc peers rm LABEL` 解除與某台裝置的配對；若有電腦遺失，請在其他電腦上執行此指令。
 何時使用 `kc device rotate`，請參閱 [docs/SECURITY.md](docs/SECURITY.md)。
 
+## 同步
+
+在已配對的裝置之間同步選定的項目。**預設不會同步任何項目。**
+將 `NAME` 換成現有項目的名稱：
+
+```console
+$ kc sync add NAME          # 加入同步範圍，並向其他裝置傳送提案
+$ kc sync                   # 在兩台裝置上執行，交換變更
+$ kc sync review            # 在接收裝置上審核提案與暫存的變更
+$ kc sync status            # 顯示狀態與本機的值指紋，不顯示值
+```
+
+目前版本會暫存所有遠端覆寫操作，等待人工審核。同步中每次套用值都需要透過
+Touch ID（或系統密碼）、Windows Hello 或 polkit 在本機確認。加入同步範圍也需要
+確認。一般的本機寫入可以將變更加進傳送佇列，但不會授權覆寫其他裝置上的值。
+發生衝突時會保留候選值；使用 `kc sync resolve NAME --keep mine` 或
+`kc sync resolve NAME --keep LABEL` 選擇要保留的版本。其他裝置仍須審核結果。
+`kc sync freeze` 不需確認即可暫停套用傳入的變更；`kc sync unfreeze` 需要系統確認。
+結束代碼 8 表示仍有待處理或受阻的工作。另請參閱[安全限制](docs/SECURITY.md)。
+
 ## 指令
 
 | 指令 | 作用 |
@@ -140,6 +160,7 @@ desktop$ kc inbox                            # 儲存收到的內容（最多保
 | `kc adopt --service S [--account A] [--as NAME]` | 將既有的鑰匙圈項目複製到 kc |
 | `kc receive` / `kc send [NAMES…]` | 用一次性代碼搬移項目 |
 | `kc pair`, `kc peers`, `kc inbox`, `kc device` | 已記住的裝置 |
+| `kc sync` | 與已配對的裝置同步選定項目 |
 | `kc doctor` | 檢查鑰匙圈、中繼伺服器與設定 |
 
 ## 疑難排解

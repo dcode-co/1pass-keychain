@@ -57,6 +57,7 @@ impl Conflicts {
 #[derive(Debug, Default)]
 pub(crate) struct Applied {
     pub results: Vec<ItemResult>,
+    pub confirmation_denied: bool,
     /// The first keychain error, to show once, with its exit code: 4 when the keychain is
     /// unavailable, 5 when it wants a person to confirm, 1 otherwise.
     pub keychain_error: Option<(String, i32)>,
@@ -70,6 +71,9 @@ pub(crate) struct Applied {
 impl Applied {
     /// 0 if everything is here, the keychain error's code if the keychain failed, else 8.
     pub fn exit_code(&self) -> i32 {
+        if self.confirmation_denied {
+            return exit::INTERACTION_REQUIRED;
+        }
         match &self.keychain_error {
             Some((_, code)) => *code,
             None => local_exit_code(&self.results),
@@ -134,6 +138,18 @@ pub(crate) fn apply_items<H: Host>(
     items: &[Item],
     conflicts: Conflicts,
     from_device: &str,
+    journal: Option<&mut dyn Journal>,
+) -> Result<Applied> {
+    let _items = ctx.state.lock_items(ctx.store.namespace())?;
+    let _state = ctx.state.lock()?;
+    apply_items_locked(ctx, items, conflicts, from_device, journal)
+}
+
+pub(crate) fn apply_items_locked<H: Host>(
+    ctx: &mut Ctx<'_, H>,
+    items: &[Item],
+    conflicts: Conflicts,
+    from_device: &str,
     mut journal: Option<&mut dyn Journal>,
 ) -> Result<Applied> {
     let mut applied = Applied::default();
@@ -171,6 +187,11 @@ pub(crate) fn apply_items<H: Host>(
                 }
                 status
             }
+            Err(Failure::SyncConfirmation(e)) => {
+                applied.confirmation_denied = true;
+                say!(ctx, "{e}");
+                ItemStatus::SkippedConflict
+            }
             Err(Failure::Cli(e)) => return Err(e),
         };
         let result = ItemResult {
@@ -194,6 +215,7 @@ pub(crate) fn apply_items<H: Host>(
 }
 
 enum Failure {
+    SyncConfirmation(CliError),
     Store(StoreError),
     /// A prompt was cancelled, or a lock couldn't be taken.
     Cli(CliError),
@@ -239,11 +261,25 @@ fn apply_one<H: Host>(
     if value.len() > MAX_VALUE_LEN {
         return Ok(ItemStatus::Rejected(REJECT_TOO_LARGE));
     }
+    if let Some(status) = crate::sync::legacy(
+        ctx,
+        item,
+        from_device,
+        conflicts == Conflicts::Policy(ConflictPolicy::Overwrite),
+    )
+    .map_err(|e| {
+        if e.code == exit::INTERACTION_REQUIRED {
+            Failure::SyncConfirmation(e)
+        } else {
+            Failure::Cli(e)
+        }
+    })? {
+        return Ok(status);
+    }
     let policy = match conflicts {
         Conflicts::Policy(policy) => policy,
         Conflicts::Ask { overwrite } => {
             {
-                let _items = ctx.state.lock_items(ctx.store.namespace())?;
                 if let Some(status) = settle_without_conflict(ctx, item, from_device, mark)? {
                     return Ok(status);
                 }
@@ -252,12 +288,12 @@ fn apply_one<H: Host>(
             ask(ctx, &item.name, overwrite)?
         }
     };
-    let _items = ctx.state.lock_items(ctx.store.namespace())?;
     if let Some(status) = settle_without_conflict(ctx, item, from_device, mark)? {
         return Ok(status);
     }
     match policy {
         ConflictPolicy::Skip => Ok(ItemStatus::SkippedConflict),
+        ConflictPolicy::Overwrite if !ctx.interactive() => Ok(ItemStatus::SkippedConflict),
         ConflictPolicy::Overwrite => {
             mark(&ctx.state)?;
             store(ctx, item.name.as_str(), item, from_device)?;

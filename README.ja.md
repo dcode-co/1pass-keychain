@@ -130,6 +130,28 @@ desktop$ kc inbox                            # 届いたものを保存 (最大 
 `kc peers rm LABEL` はデバイスのペアリングを解除します。マシンを紛失したら、他のマシンでこれを実行してください。
 `kc device rotate` を使う場面は [docs/SECURITY.md](docs/SECURITY.md) を参照してください。
 
+## 同期
+
+選んだ項目をペアリング済みデバイス間で同期します。**初期状態では何も同期しません。**
+`NAME` は既存の項目名に置き換えてください。
+
+```console
+$ kc sync add NAME          # 同期対象に登録し、他のデバイスに提案
+$ kc sync                   # 両方のデバイスで実行して変更を交換
+$ kc sync review            # 受信側で提案と保留中の変更を確認
+$ kc sync status            # 値ではなく状態とこのデバイスの値の指紋を表示
+```
+
+このバージョンでは、リモートからの上書きをすべて保留して人が確認します。同期で値を
+適用するたびに、Touch ID（または OS のパスワード）、Windows Hello、polkit による
+ローカル確認が必要です。同期対象の登録にも確認が必要です。通常のローカル書き込みは
+変更を送信待ちにできますが、他のデバイスでの上書きを許可するものではありません。
+競合した候補の値は保存されます。`kc sync resolve NAME --keep mine` または
+`kc sync resolve NAME --keep LABEL` で残す値を選びます。他のデバイスでは結果も
+確認が必要です。`kc sync freeze` は確認なしで受信した変更の適用を止めます。
+`kc sync unfreeze` には OS の確認が必要です。終了コード 8 は保留中または処理できない
+作業が残っていることを示します。[セキュリティ上の制限](docs/SECURITY.md)も参照してください。
+
 ## コマンド
 
 | コマンド | 内容 |
@@ -141,6 +163,7 @@ desktop$ kc inbox                            # 届いたものを保存 (最大 
 | `kc adopt --service S [--account A] [--as NAME]` | 既存のキーチェーン項目を kc にコピー |
 | `kc receive` / `kc send [NAMES…]` | ワンタイムコードで項目を移動 |
 | `kc pair`, `kc peers`, `kc inbox`, `kc device` | 記憶済みデバイス |
+| `kc sync` | 選んだ項目をペアリング済みデバイスと同期 |
 | `kc doctor` | キーチェーン、リレー、設定を確認 |
 
 ## トラブルシューティング

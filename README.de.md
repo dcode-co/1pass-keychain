@@ -130,6 +130,30 @@ desktop$ kc inbox                            # speichert, was angekommen ist (bi
 `kc peers rm LABEL` hebt die Kopplung eines Geräts auf; geht ein Rechner verloren, führe es auf deinen anderen Rechnern aus.
 Wann `kc device rotate` sinnvoll ist, steht in [docs/SECURITY.md](docs/SECURITY.md).
 
+## Synchronisierung
+
+Synchronisiere ausgewählte Einträge zwischen gekoppelten Geräten. **Standardmäßig
+wird nichts synchronisiert.** Ersetze `NAME` durch den Namen eines vorhandenen Eintrags:
+
+```console
+$ kc sync add NAME          # Eintrag aufnehmen und anderen Geräten vorschlagen
+$ kc sync                   # auf beiden Geräten ausführen, um Änderungen auszutauschen
+$ kc sync review            # Vorschläge und zurückgehaltene Änderungen auf dem Empfänger prüfen
+$ kc sync status            # Status und lokale Fingerabdrücke anzeigen, niemals Werte
+```
+
+Diese Version hält jedes Überschreiben durch ein anderes Gerät zur Prüfung zurück. Jeder
+Synchronisierungsschritt, der einen Wert übernimmt, verlangt eine lokale Bestätigung
+per Touch ID (oder Systempasswort), Windows Hello oder polkit. Auch die Aufnahme eines
+Eintrags verlangt diese Bestätigung. Normale lokale Schreibvorgänge können Änderungen
+in die Warteschlange stellen, erlauben aber kein Überschreiben auf anderen Geräten.
+Bei Konflikten bleiben die möglichen Werte erhalten. Wähle mit
+`kc sync resolve NAME --keep mine` oder `kc sync resolve NAME --keep LABEL` einen Wert.
+Die anderen Geräte müssen auch dieses Ergebnis prüfen. `kc sync freeze` stoppt die
+Übernahme eingehender Änderungen ohne Bestätigung; `kc sync unfreeze` verlangt eine
+Bestätigung des Betriebssystems. Exit-Code 8 bedeutet, dass noch Arbeit aussteht oder
+blockiert ist. Siehe die [Sicherheitsgrenzen](docs/SECURITY.md).
+
 ## Befehle
 
 | Befehl | Funktion |
@@ -141,6 +165,7 @@ Wann `kc device rotate` sinnvoll ist, steht in [docs/SECURITY.md](docs/SECURITY.
 | `kc adopt --service S [--account A] [--as NAME]` | kopiert einen vorhandenen Schlüsselbundeintrag in kc |
 | `kc receive` / `kc send [NAMES…]` | überträgt Einträge mit einem Einmalcode |
 | `kc pair`, `kc peers`, `kc inbox`, `kc device` | gemerkte Geräte |
+| `kc sync` | ausgewählte Einträge mit gekoppelten Geräten synchronisieren |
 | `kc doctor` | prüft den Schlüsselbund, das Relay und die Konfiguration |
 
 ## Fehlerbehebung
