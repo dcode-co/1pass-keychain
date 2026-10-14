@@ -257,14 +257,18 @@ fn reserve_keeping<H: Host>(
     }
 }
 /// Whether the head, lineage, a version or a candidate still refers to this vid binding.
+/// A candidate's parents and lineage count: accepting it makes them the item's lineage.
 fn binding_referenced(s: &State, name: &str, vid: Vid) -> bool {
     s.items
         .get(name)
         .is_some_and(|i| i.head == vid || i.lineage.contains(&vid))
         || s.versions.values().any(|v| v.name == name && v.vid == vid)
-        || s.candidates
-            .values()
-            .any(|other| other.version.name == name && other.version.vid == vid)
+        || s.candidates.values().any(|other| {
+            other.version.name == name
+                && (other.version.vid == vid
+                    || other.version.parents.contains(&vid)
+                    || other.version.lineage.contains(&vid))
+        })
 }
 fn in_known(s: &State, name: &str, vid: Vid) -> bool {
     s.items.get(name).is_some_and(|i| i.known.contains(&vid))

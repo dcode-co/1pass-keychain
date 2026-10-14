@@ -151,11 +151,13 @@ impl State {
                     .map(move |vid| (name.clone(), vid))
             })
             .chain(self.versions.values().map(|v| (v.name.clone(), v.vid)))
-            .chain(
-                self.candidates
-                    .values()
-                    .map(|c| (c.version.name.clone(), c.version.vid)),
-            )
+            // Same set as binding_referenced: a candidate's own vid, parents and lineage.
+            .chain(self.candidates.values().flat_map(|c| {
+                std::iter::once(c.version.vid)
+                    .chain(c.version.parents.iter().copied())
+                    .chain(c.version.lineage.iter().copied())
+                    .map(|vid| (c.version.name.clone(), vid))
+            }))
             .map(|(name, vid)| (super::record_slot(&name, vid), (name, vid)))
             .collect();
         for slot in std::mem::take(&mut self.gc) {

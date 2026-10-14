@@ -2438,3 +2438,61 @@ async fn rejected_held_vid_named_by_an_accepted_lineage_keeps_its_binding() {
             .is_some()
     );
 }
+#[tokio::test]
+async fn rejected_held_vid_survives_an_unrelated_accept_before_the_lineage_naming_it() {
+    let (a, b, relay) = devices().await;
+    enroll(&a, &b).await;
+    let base = head(&b);
+    // Review asks about X, then Z, then Y.
+    let (x, z, y) = (Vid([1; 16]), Vid([2; 16]), Vid([3; 16]));
+    post(
+        &a,
+        &b,
+        &relay,
+        change_message("KEY", x, base, b"fake-rejected-x"),
+    )
+    .await;
+    post(
+        &a,
+        &b,
+        &relay,
+        offer_message("OTHER", z, b"fake-other-z", 0),
+    )
+    .await;
+    let mut accepted = change_message("KEY", y, base, b"fake-accepted-y");
+    if let SyncMsg::Changes { changes } = &mut accepted {
+        changes[0].lineage = vec![base, x];
+    }
+    post(&a, &b, &relay, accepted).await;
+    b.run(&["inbox"], Run::agent()).await.expect(8);
+    let mut s = state(&b);
+    assert!(holds_candidate(&s, x) && holds_candidate(&s, z) && holds_candidate(&s, y));
+    // X has already left the known cache.
+    s["items"]["KEY"]["known"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|v| *v != serde_json::to_value(x).unwrap());
+    save_state(&b, &s);
+    let out = b
+        .run(
+            &["sync", "review"],
+            human(vec![
+                Answer::Select(1),
+                Answer::Select(0),
+                Answer::Select(0),
+            ]),
+        )
+        .await;
+    assert!([0, 8].contains(&out.code), "{}", out.stderr);
+    assert_eq!(b.value("OTHER").unwrap(), b"fake-other-z");
+    assert_eq!(b.value("KEY").unwrap(), b"fake-accepted-y");
+    let lineage: Vec<Vid> =
+        serde_json::from_value(state(&b)["items"]["KEY"]["lineage"].clone()).unwrap();
+    assert!(lineage.contains(&x));
+    assert!(
+        b.store()
+            .get_internal(&fp_slot("KEY", x))
+            .unwrap()
+            .is_some()
+    );
+}
