@@ -91,6 +91,11 @@ pub struct State {
     pub rejected_until: BTreeMap<String, i64>,
     #[serde(default)]
     pub unbound: BTreeSet<String>,
+    /// `name:vid` bindings that left known while something else still referred to them;
+    /// deleted once nothing does. Bounded per item by its lineage (64), versions and
+    /// candidates.
+    #[serde(default)]
+    pub(crate) unbind_watch: BTreeSet<String>,
     pub items: BTreeMap<String, Item>,
     pub peers: BTreeMap<String, Peer>,
     pub generations: Generations,
@@ -128,28 +133,41 @@ impl State {
     }
     pub fn cleanup<H: Host>(&mut self, ctx: &Ctx<'_, H>) -> Result<()> {
         super::prune(self, ctx.host.now());
-        // A binding scheduled for deletion may have become live again in the same
-        // transaction (an accepted proposal evicted by its own checkpoint reservation).
-        let live: BTreeSet<String> = self
+        // Deletion gate: a binding queued for deletion may have become live again in the
+        // same transaction (an accepted proposal evicted by its own checkpoint reservation,
+        // or a rejected vid that an accepted lineage names). Known bindings are left to
+        // trim_known; the others are watched until nothing refers to them.
+        let known: BTreeSet<String> = self
+            .items
+            .iter()
+            .flat_map(|(name, i)| i.known.iter().map(|vid| super::record_slot(name, *vid)))
+            .collect();
+        let referenced: BTreeMap<String, (String, Vid)> = self
             .items
             .iter()
             .flat_map(|(name, i)| {
                 std::iter::once(i.head)
-                    .chain(i.known.iter().copied())
-                    .map(move |vid| super::record_slot(name, vid))
+                    .chain(i.lineage.iter().copied())
+                    .map(move |vid| (name.clone(), vid))
             })
-            .chain(
-                self.versions
-                    .values()
-                    .map(|v| super::record_slot(&v.name, v.vid)),
-            )
+            .chain(self.versions.values().map(|v| (v.name.clone(), v.vid)))
             .chain(
                 self.candidates
                     .values()
-                    .map(|c| super::record_slot(&c.version.name, c.version.vid)),
+                    .map(|c| (c.version.name.clone(), c.version.vid)),
             )
+            .map(|(name, vid)| (super::record_slot(&name, vid), (name, vid)))
             .collect();
-        self.gc.retain(|slot| !live.contains(slot));
+        for slot in std::mem::take(&mut self.gc) {
+            if known.contains(&slot) {
+                continue;
+            }
+            if let Some((name, vid)) = referenced.get(&slot) {
+                self.unbind_watch.insert(super::binding_key(name, *vid));
+                continue;
+            }
+            self.gc.insert(slot);
+        }
         // Metadata is durable before deletion. A restart repeats only harmless deletes.
         self.save(&ctx.state)?;
         for slot in &self.gc {

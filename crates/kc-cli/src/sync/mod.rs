@@ -266,13 +266,26 @@ fn binding_referenced(s: &State, name: &str, vid: Vid) -> bool {
             .values()
             .any(|other| other.version.name == name && other.version.vid == vid)
 }
+fn in_known(s: &State, name: &str, vid: Vid) -> bool {
+    s.items.get(name).is_some_and(|i| i.known.contains(&vid))
+}
+/// The `name:vid` key of `unbound` and `unbind_watch`.
+fn binding_key(name: &str, vid: Vid) -> String {
+    format!("{}:{}", name, vid_key(vid))
+}
 /// Drops a dropped proposal's vid binding (`sync/fp/...` record, unbound entry, known vid)
-/// unless something else still refers to it.
+/// unless something else still refers to it; a referenced binding outside known is
+/// watched until that reference goes away.
 fn forget_binding(s: &mut State, name: &str, vid: Vid) {
+    let key = binding_key(name, vid);
     if binding_referenced(s, name, vid) {
+        if !in_known(s, name, vid) {
+            s.unbind_watch.insert(key);
+        }
         return;
     }
-    s.unbound.remove(&format!("{}:{}", name, vid_key(vid)));
+    s.unbound.remove(&key);
+    s.unbind_watch.remove(&key);
     if let Some(item) = s.items.get_mut(name) {
         item.known.retain(|known| *known != vid);
     }
@@ -281,7 +294,7 @@ fn forget_binding(s: &mut State, name: &str, vid: Vid) {
 /// Drops a vid binding once it has left the item's known cache and nothing else refers to
 /// it, so neither the known cap nor removed candidates leave records behind.
 fn drop_binding(s: &mut State, name: &str, vid: Vid) {
-    if !s.items.get(name).is_some_and(|i| i.known.contains(&vid)) {
+    if !in_known(s, name, vid) {
         forget_binding(s, name, vid);
     }
 }
@@ -357,6 +370,16 @@ fn prune(s: &mut State, now: i64) {
         if !candidate && !accepted {
             forget_binding(s, &name, vid);
         }
+    }
+    // A watched binding back in known is trim_known's again; the rest is retried here.
+    for entry in std::mem::take(&mut s.unbind_watch) {
+        let Some((name, vid)) = entry
+            .rsplit_once(':')
+            .and_then(|(name, hex)| Some((name.to_owned(), parse_vid(hex)?)))
+        else {
+            continue;
+        };
+        drop_binding(s, &name, vid);
     }
 }
 fn parse_vid(hex: &str) -> Option<Vid> {
