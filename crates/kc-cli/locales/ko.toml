@@ -526,3 +526,4 @@
 "Still pending: {what}." = "아직 남은 일: {what}."
 "No polkit authentication agent is running in this session (for example over SSH, or on a desktop without one such as hyprpolkitagent or polkit-gnome). Run this command from a desktop session that has an agent." = "이 세션에는 polkit 인증 에이전트가 실행 중이지 않습니다(예: SSH 접속, 또는 hyprpolkitagent·polkit-gnome 같은 에이전트가 없는 데스크톱). 인증 에이전트가 있는 데스크톱 세션에서 이 명령을 실행하세요."
 "The operating system couldn't ask for confirmation: {reason}." = "운영체제가 본인 확인을 요청하지 못했습니다: {reason}."
+"The polkit prompt shows a generic message. It is confirming: {reason}" = "polkit 창에는 일반 안내 문구가 표시됩니다. 확인하려는 작업: {reason}"
