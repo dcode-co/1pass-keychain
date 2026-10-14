@@ -508,6 +508,7 @@ fn change_received<H: Host>(
             if !item.known.contains(&c.new_vid) {
                 item.known.push(c.new_vid);
             }
+            trim_known(s, name);
         }
         Transition::Unchanged => {}
         // No verified approval is ever constructed in Phase 1.
@@ -678,15 +679,11 @@ pub(super) fn store_candidate<H: Host>(
     if !retire
         && !invalid_binding
         && let Some(item) = s.items.get_mut(&v.name)
+        && !item.known.contains(&v.vid)
     {
-        if !item.known.contains(&v.vid) {
-            item.known.push(v.vid);
-        }
-        while item.known.len() > 256 {
-            let index = item.known.iter().position(|vid| *vid != item.head).unwrap();
-            item.known.remove(index);
-        }
+        item.known.push(v.vid);
     }
+    trim_known(s, &v.name);
     let key = v.slot.clone();
     s.candidates.insert(
         key,
@@ -775,9 +772,23 @@ pub(crate) fn legacy<H: Host>(
             return Err(error);
         }
         let c = s.candidates[&slot].clone();
-        if transaction::accept(ctx, &mut s, &c)? == transaction::Accepted::Applied {
-            return Ok(Some(kc_proto::ItemStatus::Stored));
+        let line = match transaction::accept(ctx, &mut s, &c)? {
+            transaction::Accepted::Applied => return Ok(Some(kc_proto::ItemStatus::Stored)),
+            transaction::Accepted::Conflict => Some(tr!(
+                "{name} changed on this device meanwhile and is now a conflict; settle it with `kc sync resolve {name}`.",
+                name = name
+            )),
+            transaction::Accepted::Full => Some(tr!(
+                "Sync storage is full; review pending items before retrying."
+            )),
+            // accept() already said which conflict must be settled first.
+            transaction::Accepted::Unsettled => None,
+        };
+        s.cleanup(ctx)?;
+        if let Some(line) = line {
+            crate::commands::say!(ctx, "{line}");
         }
+        return Ok(Some(kc_proto::ItemStatus::SkippedConflict));
     }
     s.cleanup(ctx)?;
     crate::commands::say!(ctx, "{}", tr!("Sync item held; run `kc sync review`."));

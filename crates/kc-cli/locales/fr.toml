@@ -501,6 +501,7 @@
 "Sync item held; run `kc sync review`." = "Élément de synchronisation en attente ; exécutez `kc sync review`."
 "{name} is in conflict; settle it with `kc sync resolve {name}` first." = "{name} est en conflit ; résolvez-le d’abord avec `kc sync resolve {name}`."
 "{name} changed on this device meanwhile and is now a conflict; settle it with `kc sync resolve {name}`." = "{name} a été modifié entre-temps sur cet appareil et est maintenant en conflit ; résolvez-le avec `kc sync resolve {name}`."
+"{name} from {peer} was replaced by a newer change; run `kc sync review` again." = "{name} depuis {peer} a été remplacé par une modification plus récente ; exécutez à nouveau `kc sync review`."
 "removed from sync" = "retiré de la synchronisation"
 "hasn't answered the sync handshake yet" = "n’a pas encore répondu à la négociation de synchronisation"
 "paused after too many changes" = "en pause après trop de modifications"

@@ -2158,3 +2158,341 @@ async fn resolve_at_full_capacity_reports_storage_full_instead_of_resolved() {
     );
     assert_eq!(state(&b)["items"]["KEY"]["conflict"], true);
 }
+#[tokio::test]
+async fn legacy_accept_turned_conflict_reports_the_conflict_not_held() {
+    let (a, b, _) = devices().await;
+    enroll(&a, &b).await;
+    a.store()
+        .set(
+            "KEY",
+            b"fake-legacy-terminal",
+            kc_store::ItemKind::Text,
+            kc_store::Origin::Local,
+        )
+        .unwrap();
+    a.run(&["send", "KEY", "--to", "bravo"], Run::agent())
+        .await
+        .expect(0);
+    // A local edit lands while the overwrite waits for local confirmation.
+    let run = human(vec![Answer::Yes]).on_local_confirm(|store, _| {
+        store
+            .set(
+                "KEY",
+                b"fake-intervening-local",
+                kc_store::ItemKind::Text,
+                kc_store::Origin::Local,
+            )
+            .unwrap();
+    });
+    let out = b.run(&["inbox", "--on-conflict", "overwrite"], run).await;
+    assert!(
+        out.stderr
+            .contains("KEY changed on this device meanwhile and is now a conflict"),
+        "{}",
+        out.stderr
+    );
+    assert!(!out.stderr.contains("Sync item held"), "{}", out.stderr);
+    assert_eq!(b.value("KEY").unwrap(), b"fake-intervening-local");
+    assert_eq!(state(&b)["items"]["KEY"]["conflict"], true);
+}
+#[tokio::test]
+async fn evicted_held_candidate_keeps_its_binding() {
+    let (a, b, relay) = devices().await;
+    enroll(&a, &b).await;
+    let held = Vid::random();
+    post(
+        &a,
+        &b,
+        &relay,
+        change_message("KEY", held, head(&b), b"fake-held"),
+    )
+    .await;
+    b.run(&["inbox"], Run::agent()).await.expect(8);
+    assert!(holds_candidate(&state(&b), held));
+    // Fill the budget with checkpoints so the next snapshot can only evict the held slot.
+    let mut s = state(&b);
+    let used = s["slots"].as_object().unwrap().len();
+    for n in used..16 {
+        let slot = format!("sync/kg/test-{n}");
+        b.store().set_internal(&slot, b"fake-pinned").unwrap();
+        s["slots"][slot] = "Checkpoint".into();
+    }
+    save_state(&b, &s);
+    b.set("LOCAL", b"fake-local").await;
+    b.run(&["sync", "add", "LOCAL", "--peers", "alpha"], human(vec![]))
+        .await
+        .expect(8);
+    assert!(!holds_candidate(&state(&b), held));
+    assert!(
+        b.store()
+            .get_internal(&fp_slot("KEY", held))
+            .unwrap()
+            .is_some()
+    );
+}
+async fn review_with_candidate_changed_meanwhile(
+    change: impl FnOnce(&mut Value) + Send + 'static,
+) -> common::Output {
+    let (a, b, _) = devices().await;
+    enroll(&a, &b).await;
+    a.set("KEY", b"fake-incoming").await;
+    pump(&a, &b).await;
+    assert_eq!(state(&b)["candidates"].as_object().unwrap().len(), 1);
+    // Another process changes the candidate while review waits for local confirmation.
+    let run = human(vec![Answer::Select(0)]).on_local_confirm(move |_, dir| {
+        let path = dir.join("sync.json");
+        let mut s: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        change(&mut s);
+        std::fs::write(&path, serde_json::to_vec_pretty(&s).unwrap()).unwrap();
+    });
+    let out = b.run(&["sync", "review"], run).await;
+    assert!(!out.stderr.contains("Accepted KEY"), "{}", out.stderr);
+    assert_eq!(b.value("KEY").unwrap(), b"fake-initial-secret");
+    out
+}
+#[tokio::test]
+async fn review_reports_accepted_candidate_retired_meanwhile() {
+    let out = review_with_candidate_changed_meanwhile(|s| {
+        let slot = s["candidates"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
+        s["candidates"].as_object_mut().unwrap().remove(&slot);
+        s["slots"].as_object_mut().unwrap().remove(&slot);
+    })
+    .await;
+    assert!(
+        out.stderr
+            .contains("KEY from alpha was replaced by a newer change; run `kc sync review` again."),
+        "{}",
+        out.stderr
+    );
+}
+#[tokio::test]
+async fn review_reports_accepted_candidate_turned_conflict_meanwhile() {
+    let out = review_with_candidate_changed_meanwhile(|s| {
+        let slots = s["candidates"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for slot in slots {
+            s["candidates"][&slot]["category"] = "conflict".into();
+            s["slots"][&slot] = "ConflictCandidate".into();
+        }
+        s["items"]["KEY"]["conflict"] = true.into();
+    })
+    .await;
+    assert_eq!(
+        out.stderr
+            .matches("KEY is in conflict; settle it with `kc sync resolve KEY` first.")
+            .count(),
+        1,
+        "{}",
+        out.stderr
+    );
+}
+#[tokio::test]
+async fn known_cap_drops_unreferenced_bindings_and_evicted_held_after_it_left_known() {
+    let (a, b, relay) = devices().await;
+    enroll(&a, &b).await;
+    let held = Vid::random();
+    post(
+        &a,
+        &b,
+        &relay,
+        change_message("KEY", held, head(&b), b"fake-held"),
+    )
+    .await;
+    b.run(&["inbox"], Run::agent()).await.expect(8);
+    assert!(holds_candidate(&state(&b), held));
+    // Preload known past the cap: a lineage vid and the held vid sit first, then fillers;
+    // the second filler is an unacknowledged outbound version's vid.
+    let mut s = state(&b);
+    let head = head(&b);
+    let record = b
+        .store()
+        .get_internal(&fp_slot("KEY", head))
+        .unwrap()
+        .unwrap();
+    let in_lineage = Vid::random();
+    let fillers = (0..256).map(|_| Vid::random()).collect::<Vec<_>>();
+    for vid in std::iter::once(&in_lineage).chain(&fillers) {
+        b.store()
+            .set_internal(&fp_slot("KEY", *vid), record.as_bytes())
+            .unwrap();
+    }
+    let mut known = vec![in_lineage, held];
+    known.extend(&fillers);
+    known.push(head);
+    s["items"]["KEY"]["known"] = serde_json::to_value(&known).unwrap();
+    s["items"]["KEY"]["lineage"]
+        .as_array_mut()
+        .unwrap()
+        .insert(0, serde_json::to_value(in_lineage).unwrap());
+    s["versions"][hex(&fillers[1].0)] = serde_json::json!({
+        "name": "KEY",
+        "vid": fillers[1],
+        "parents": [head],
+        "lineage": [head, fillers[1]],
+        "kind": "text",
+        "slot": format!("sync/snapshot/{}", hex(&fillers[1].0)),
+    });
+    save_state(&b, &s);
+    // A local change adds one more vid, so four fall out of known.
+    b.set("KEY", b"fake-local-change").await;
+    let s = state(&b);
+    let lineage: Vec<Vid> = serde_json::from_value(s["items"]["KEY"]["lineage"].clone()).unwrap();
+    assert!(lineage.contains(&in_lineage));
+    let has = |vid: Vid| {
+        b.store()
+            .get_internal(&fp_slot("KEY", vid))
+            .unwrap()
+            .is_some()
+    };
+    // The version kept its binding through the trim; set's flush then collected it.
+    assert!(s["versions"].get(hex(&fillers[1].0)).is_none());
+    assert!(!has(fillers[0]) && !has(fillers[1]));
+    assert!(has(in_lineage) && has(held) && has(fillers[2]) && has(head));
+    let known: Vec<Vid> = serde_json::from_value(s["items"]["KEY"]["known"].clone()).unwrap();
+    assert_eq!(known.len(), 256);
+    for vid in [in_lineage, held, fillers[0], fillers[1]] {
+        assert!(!known.contains(&vid));
+    }
+    assert!(holds_candidate(&s, held));
+    // Evicting the held candidate now that its vid left known deletes its binding.
+    let mut s = state(&b);
+    let used = s["slots"].as_object().unwrap().len();
+    for n in used..16 {
+        let slot = format!("sync/kg/test-{n}");
+        b.store().set_internal(&slot, b"fake-pinned").unwrap();
+        s["slots"][slot] = "Checkpoint".into();
+    }
+    save_state(&b, &s);
+    b.set("LOCAL", b"fake-local").await;
+    b.run(&["sync", "add", "LOCAL", "--peers", "alpha"], human(vec![]))
+        .await
+        .expect(8);
+    assert!(!holds_candidate(&state(&b), held));
+    assert!(!has(held));
+    // Once the lineage moves on, the lineage vid's binding goes too.
+    let mut s = state(&b);
+    s["items"]["KEY"]["lineage"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|v| *v != serde_json::to_value(in_lineage).unwrap());
+    save_state(&b, &s);
+    assert!(has(in_lineage));
+    let out = b.run(&["sync"], Run::agent()).await;
+    assert!([0, 8].contains(&out.code), "{}", out.stderr);
+    assert!(!has(in_lineage));
+    assert!(has(fillers[2]) && has(head));
+    assert!(state(&b)["unbind_watch"].as_array().unwrap().is_empty());
+}
+#[tokio::test]
+async fn rejected_held_vid_named_by_an_accepted_lineage_keeps_its_binding() {
+    let (a, b, relay) = devices().await;
+    enroll(&a, &b).await;
+    let base = head(&b);
+    // X sorts before Y, so review asks about X first.
+    let (x, y) = (Vid([1; 16]), Vid([2; 16]));
+    post(
+        &a,
+        &b,
+        &relay,
+        change_message("KEY", x, base, b"fake-rejected-x"),
+    )
+    .await;
+    let mut accepted = change_message("KEY", y, base, b"fake-accepted-y");
+    if let SyncMsg::Changes { changes } = &mut accepted {
+        changes[0].lineage = vec![base, x];
+    }
+    post(&a, &b, &relay, accepted).await;
+    b.run(&["inbox"], Run::agent()).await.expect(8);
+    let mut s = state(&b);
+    assert!(holds_candidate(&s, x) && holds_candidate(&s, y));
+    // X has already left the known cache.
+    s["items"]["KEY"]["known"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|v| *v != serde_json::to_value(x).unwrap());
+    save_state(&b, &s);
+    b.run(
+        &["sync", "review"],
+        human(vec![Answer::Select(1), Answer::Select(0)]),
+    )
+    .await
+    .expect(0);
+    assert_eq!(b.value("KEY").unwrap(), b"fake-accepted-y");
+    let lineage: Vec<Vid> =
+        serde_json::from_value(state(&b)["items"]["KEY"]["lineage"].clone()).unwrap();
+    assert!(lineage.contains(&x));
+    assert!(
+        b.store()
+            .get_internal(&fp_slot("KEY", x))
+            .unwrap()
+            .is_some()
+    );
+}
+#[tokio::test]
+async fn rejected_held_vid_survives_an_unrelated_accept_before_the_lineage_naming_it() {
+    let (a, b, relay) = devices().await;
+    enroll(&a, &b).await;
+    let base = head(&b);
+    // Review asks about X, then Z, then Y.
+    let (x, z, y) = (Vid([1; 16]), Vid([2; 16]), Vid([3; 16]));
+    post(
+        &a,
+        &b,
+        &relay,
+        change_message("KEY", x, base, b"fake-rejected-x"),
+    )
+    .await;
+    post(
+        &a,
+        &b,
+        &relay,
+        offer_message("OTHER", z, b"fake-other-z", 0),
+    )
+    .await;
+    let mut accepted = change_message("KEY", y, base, b"fake-accepted-y");
+    if let SyncMsg::Changes { changes } = &mut accepted {
+        changes[0].lineage = vec![base, x];
+    }
+    post(&a, &b, &relay, accepted).await;
+    b.run(&["inbox"], Run::agent()).await.expect(8);
+    let mut s = state(&b);
+    assert!(holds_candidate(&s, x) && holds_candidate(&s, z) && holds_candidate(&s, y));
+    // X has already left the known cache.
+    s["items"]["KEY"]["known"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|v| *v != serde_json::to_value(x).unwrap());
+    save_state(&b, &s);
+    let out = b
+        .run(
+            &["sync", "review"],
+            human(vec![
+                Answer::Select(1),
+                Answer::Select(0),
+                Answer::Select(0),
+            ]),
+        )
+        .await;
+    assert!([0, 8].contains(&out.code), "{}", out.stderr);
+    assert_eq!(b.value("OTHER").unwrap(), b"fake-other-z");
+    assert_eq!(b.value("KEY").unwrap(), b"fake-accepted-y");
+    let lineage: Vec<Vid> =
+        serde_json::from_value(state(&b)["items"]["KEY"]["lineage"].clone()).unwrap();
+    assert!(lineage.contains(&x));
+    assert!(
+        b.store()
+            .get_internal(&fp_slot("KEY", x))
+            .unwrap()
+            .is_some()
+    );
+}

@@ -161,12 +161,10 @@ fn finish_local<H: Host>(
     if !item.known.contains(&v.vid) {
         item.known.push(v.vid);
     }
-    if item.known.len() > 256 {
-        item.known.remove(0);
-    }
     if clear {
         item.conflict = false;
     }
+    trim_known(s, &r.name);
     s.versions.insert(vid_key(v.vid), v.clone());
     s.latest_local.insert(r.name.clone(), v.vid);
     for target in &r.targets {
@@ -200,6 +198,7 @@ pub(super) fn clear_candidates(s: &mut State, name: &str) {
         if let Some(c) = s.candidates.remove(&key) {
             release(s, &c.version.slot);
             s.gc.insert(c.base_record);
+            drop_binding(s, name, c.version.vid);
         }
     }
 }
@@ -568,9 +567,6 @@ fn finish_remote<H: Host>(
     if !known.contains(&c.version.vid) {
         known.push(c.version.vid);
     }
-    if known.len() > 256 {
-        known.remove(0);
-    }
     s.items.insert(
         name.clone(),
         Item {
@@ -583,6 +579,7 @@ fn finish_remote<H: Host>(
             conflict: false,
         },
     );
+    trim_known(s, name);
     if proposal {
         let registration = s.generations.accept(name, PeerId(c.peer.clone()));
         queue(
@@ -691,7 +688,8 @@ pub(super) fn retire_superseded(s: &mut State, now: i64) {
         if let Some(old) = s.candidates.remove(&key) {
             release(s, &old.version.slot);
             s.gc.insert(old.base_record);
-            // The vid binding stays in known for the immutable-vid check. Held was already
+            drop_binding(s, &old.version.name, old.version.vid);
+            // The vid binding stays while in known for the immutable-vid check. Held was already
             // acknowledged, so no Rejected ACK is sent; the receipt stops a late duplicate.
             s.receipts.insert(
                 delivery_key(

@@ -501,6 +501,7 @@
 "Sync item held; run `kc sync review`." = "동기화 항목을 보류했습니다. `kc sync review`를 실행하세요."
 "{name} is in conflict; settle it with `kc sync resolve {name}` first." = "{name} 항목이 충돌 중입니다. 먼저 `kc sync resolve {name}`로 해결하세요."
 "{name} changed on this device meanwhile and is now a conflict; settle it with `kc sync resolve {name}`." = "그사이 이 기기에서 {name} 항목이 바뀌어 충돌 상태가 되었습니다. `kc sync resolve {name}`로 해결하세요."
+"{name} from {peer} was replaced by a newer change; run `kc sync review` again." = "{peer}에서 온 {name} 변경은 더 최근 변경으로 대체되었습니다. `kc sync review`를 다시 실행하세요."
 "removed from sync" = "동기화에서 뺌"
 "hasn't answered the sync handshake yet" = "아직 동기화 연결 응답 없음"
 "paused after too many changes" = "변경이 너무 많아 일시 중지됨"

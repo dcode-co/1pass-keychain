@@ -501,6 +501,7 @@
 "Sync item held; run `kc sync review`." = "同步项目已保留；请运行 `kc sync review`。"
 "{name} is in conflict; settle it with `kc sync resolve {name}` first." = "{name} 存在冲突，请先用 `kc sync resolve {name}` 解决。"
 "{name} changed on this device meanwhile and is now a conflict; settle it with `kc sync resolve {name}`." = "{name} 在此期间已在本设备上更改，现已成为冲突，请用 `kc sync resolve {name}` 解决。"
+"{name} from {peer} was replaced by a newer change; run `kc sync review` again." = "来自 {peer} 的 {name} 更改已被更新的更改取代，请再次运行 `kc sync review`。"
 "removed from sync" = "已移出同步"
 "hasn't answered the sync handshake yet" = "尚未回应同步握手"
 "paused after too many changes" = "因更改过多已暂停"
