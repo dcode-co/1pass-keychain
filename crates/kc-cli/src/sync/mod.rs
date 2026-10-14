@@ -237,10 +237,12 @@ fn reserve_keeping<H: Host>(
                 for c in evicted {
                     s.gc.insert(c.base_record);
                     // Only a proposal's binding goes with it: held and conflict bindings stay
-                    // for the immutable-vid check, as in retire_superseded. An invalid
-                    // binding's record belongs to the legitimate vid.
+                    // for the immutable-vid check while known, as in retire_superseded. An
+                    // invalid binding's record belongs to the legitimate vid.
                     if c.category == CandidateKind::Proposal && !c.invalid_binding {
                         forget_binding(s, &c.version.name, c.version.vid);
+                    } else {
+                        drop_binding(s, &c.version.name, c.version.vid);
                     }
                 }
                 s.slots.remove(&victim);
@@ -254,15 +256,20 @@ fn reserve_keeping<H: Host>(
         }
     }
 }
-/// Drops a dropped proposal's vid binding (`sync/fp/...` record, unbound entry, known vid)
-/// unless the head, a version or another candidate still refers to it.
-fn forget_binding(s: &mut State, name: &str, vid: Vid) {
-    let referenced = s.items.get(name).is_some_and(|i| i.head == vid)
+/// Whether the head, lineage, a version or a candidate still refers to this vid binding.
+fn binding_referenced(s: &State, name: &str, vid: Vid) -> bool {
+    s.items
+        .get(name)
+        .is_some_and(|i| i.head == vid || i.lineage.contains(&vid))
         || s.versions.values().any(|v| v.name == name && v.vid == vid)
         || s.candidates
             .values()
-            .any(|other| other.version.name == name && other.version.vid == vid);
-    if referenced {
+            .any(|other| other.version.name == name && other.version.vid == vid)
+}
+/// Drops a dropped proposal's vid binding (`sync/fp/...` record, unbound entry, known vid)
+/// unless something else still refers to it.
+fn forget_binding(s: &mut State, name: &str, vid: Vid) {
+    if binding_referenced(s, name, vid) {
         return;
     }
     s.unbound.remove(&format!("{}:{}", name, vid_key(vid)));
@@ -270,6 +277,29 @@ fn forget_binding(s: &mut State, name: &str, vid: Vid) {
         item.known.retain(|known| *known != vid);
     }
     s.gc.insert(record_slot(name, vid));
+}
+/// Drops a vid binding once it has left the item's known cache and nothing else refers to
+/// it, so neither the known cap nor removed candidates leave records behind.
+fn drop_binding(s: &mut State, name: &str, vid: Vid) {
+    if !s.items.get(name).is_some_and(|i| i.known.contains(&vid)) {
+        forget_binding(s, name, vid);
+    }
+}
+/// Caps the item's known cache, keeping the head, and drops the bindings that fall out.
+fn trim_known(s: &mut State, name: &str) {
+    let Some(item) = s.items.get_mut(name) else {
+        return;
+    };
+    let mut dropped = Vec::new();
+    while item.known.len() > kc_sync::MAX_KNOWN {
+        let Some(index) = item.known.iter().position(|vid| *vid != item.head) else {
+            break;
+        };
+        dropped.push(item.known.remove(index));
+    }
+    for vid in dropped {
+        drop_binding(s, name, vid);
+    }
 }
 
 /// A rejected offer stays blocked while its sender keeps retrying.

@@ -2296,3 +2296,76 @@ async fn review_reports_accepted_candidate_turned_conflict_meanwhile() {
         out.stderr
     );
 }
+#[tokio::test]
+async fn known_cap_drops_unreferenced_bindings_and_evicted_held_after_it_left_known() {
+    let (a, b, relay) = devices().await;
+    enroll(&a, &b).await;
+    let held = Vid::random();
+    post(
+        &a,
+        &b,
+        &relay,
+        change_message("KEY", held, head(&b), b"fake-held"),
+    )
+    .await;
+    b.run(&["inbox"], Run::agent()).await.expect(8);
+    assert!(holds_candidate(&state(&b), held));
+    // Preload known past the cap: a lineage vid and the held vid sit first, then fillers.
+    let mut s = state(&b);
+    let head = head(&b);
+    let record = b
+        .store()
+        .get_internal(&fp_slot("KEY", head))
+        .unwrap()
+        .unwrap();
+    let in_lineage = Vid::random();
+    let fillers = (0..256).map(|_| Vid::random()).collect::<Vec<_>>();
+    for vid in std::iter::once(&in_lineage).chain(&fillers) {
+        b.store()
+            .set_internal(&fp_slot("KEY", *vid), record.as_bytes())
+            .unwrap();
+    }
+    let mut known = vec![in_lineage, held];
+    known.extend(&fillers);
+    known.push(head);
+    s["items"]["KEY"]["known"] = serde_json::to_value(&known).unwrap();
+    s["items"]["KEY"]["lineage"]
+        .as_array_mut()
+        .unwrap()
+        .insert(0, serde_json::to_value(in_lineage).unwrap());
+    save_state(&b, &s);
+    // A local change adds one more vid, so four fall out of known.
+    b.set("KEY", b"fake-local-change").await;
+    let s = state(&b);
+    let lineage: Vec<Vid> = serde_json::from_value(s["items"]["KEY"]["lineage"].clone()).unwrap();
+    assert!(lineage.contains(&in_lineage));
+    let has = |vid: Vid| {
+        b.store()
+            .get_internal(&fp_slot("KEY", vid))
+            .unwrap()
+            .is_some()
+    };
+    assert!(!has(fillers[0]) && !has(fillers[1]));
+    assert!(has(in_lineage) && has(held) && has(fillers[2]) && has(head));
+    let known: Vec<Vid> = serde_json::from_value(s["items"]["KEY"]["known"].clone()).unwrap();
+    assert_eq!(known.len(), 256);
+    for vid in [in_lineage, held, fillers[0], fillers[1]] {
+        assert!(!known.contains(&vid));
+    }
+    assert!(holds_candidate(&s, held));
+    // Evicting the held candidate now that its vid left known deletes its binding.
+    let mut s = state(&b);
+    let used = s["slots"].as_object().unwrap().len();
+    for n in used..16 {
+        let slot = format!("sync/kg/test-{n}");
+        b.store().set_internal(&slot, b"fake-pinned").unwrap();
+        s["slots"][slot] = "Checkpoint".into();
+    }
+    save_state(&b, &s);
+    b.set("LOCAL", b"fake-local").await;
+    b.run(&["sync", "add", "LOCAL", "--peers", "alpha"], human(vec![]))
+        .await
+        .expect(8);
+    assert!(!holds_candidate(&state(&b), held));
+    assert!(!has(held));
+}

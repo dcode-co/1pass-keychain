@@ -423,6 +423,7 @@ pub(crate) fn review<H: Host>(ctx: &mut Ctx<'_, H>) -> Result<i32> {
                 reject_offer(&mut s, delivery, ctx.host.now());
                 forget_binding(&mut s, &c.version.name, c.version.vid);
             } else {
+                drop_binding(&mut s, &c.version.name, c.version.vid);
                 s.receipts.insert(
                     delivery,
                     (

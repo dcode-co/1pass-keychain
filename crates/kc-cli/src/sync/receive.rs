@@ -508,6 +508,7 @@ fn change_received<H: Host>(
             if !item.known.contains(&c.new_vid) {
                 item.known.push(c.new_vid);
             }
+            trim_known(s, name);
         }
         Transition::Unchanged => {}
         // No verified approval is ever constructed in Phase 1.
@@ -678,15 +679,11 @@ pub(super) fn store_candidate<H: Host>(
     if !retire
         && !invalid_binding
         && let Some(item) = s.items.get_mut(&v.name)
+        && !item.known.contains(&v.vid)
     {
-        if !item.known.contains(&v.vid) {
-            item.known.push(v.vid);
-        }
-        while item.known.len() > 256 {
-            let index = item.known.iter().position(|vid| *vid != item.head).unwrap();
-            item.known.remove(index);
-        }
+        item.known.push(v.vid);
     }
+    trim_known(s, &v.name);
     let key = v.slot.clone();
     s.candidates.insert(
         key,
