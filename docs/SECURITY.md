@@ -68,7 +68,9 @@ or polkit; agents cannot supply this confirmation.
   new local publication from a remaining copy.
 - **Linux sync confirmation:** L currently uses polkit's
   `org.freedesktop.policykit.exec` action, which may ask for an administrator
-  password. The OS policy controls authentication and caching. A kc-specific
+  password. polkit only shows that action's generic text ("run a program as
+  another user"), so kc prints what is being confirmed on the terminal first.
+  The OS policy controls authentication and caching. A kc-specific
   policy is planned with the later sync installer; neither ships in Phase 1.
 - **No signed sync approvals yet:** A/A+ and FIDO2 are Phase 1b work; the
   1pass.dev phone approver is Phase 2b work. They cannot authorize overwrites

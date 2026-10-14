@@ -526,3 +526,4 @@
 "Still pending: {what}." = "Noch offen: {what}."
 "No polkit authentication agent is running in this session (for example over SSH, or on a desktop without one such as hyprpolkitagent or polkit-gnome). Run this command from a desktop session that has an agent." = "In dieser Sitzung läuft kein polkit-Authentifizierungsagent (zum Beispiel über SSH oder auf einem Desktop ohne Agent wie hyprpolkitagent oder polkit-gnome). Führen Sie diesen Befehl in einer Desktop-Sitzung mit Agent aus."
 "The operating system couldn't ask for confirmation: {reason}." = "Das Betriebssystem konnte keine Bestätigung anfordern: {reason}."
+"The polkit prompt shows a generic message. It is confirming: {reason}" = "Die polkit-Abfrage zeigt einen allgemeinen Text. Bestätigt wird: {reason}"

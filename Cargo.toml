@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/kc-wire", "crates/kc-proto", "crates/kc-store", "crates/kc-relay", "crates/kc-cli", "crates/kc-sync"]
 
 [workspace.package]
-version = "0.3.2"
+version = "0.3.3"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -15,10 +15,10 @@ authors = ["Dcode <support@1pass.dev>"]
 # `dep = { workspace = true, features = [...] }`. A lane that needs a crate that
 # isn't listed here may add it to its own Cargo.toml directly.
 [workspace.dependencies]
-kc-wire = { path = "crates/kc-wire", version = "0.3.2" }
-kc-proto = { path = "crates/kc-proto", version = "0.3.2" }
-kc-store = { path = "crates/kc-store", version = "0.3.2" }
-kc-sync = { path = "crates/kc-sync", version = "0.3.2" }
+kc-wire = { path = "crates/kc-wire", version = "0.3.3" }
+kc-proto = { path = "crates/kc-proto", version = "0.3.3" }
+kc-store = { path = "crates/kc-store", version = "0.3.3" }
+kc-sync = { path = "crates/kc-sync", version = "0.3.3" }
 
 anyhow = "1"
 thiserror = "2"

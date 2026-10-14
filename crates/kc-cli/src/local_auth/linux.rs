@@ -1,6 +1,8 @@
 use std::process::Command;
 
 use super::LocalAuthOutcome;
+#[cfg(target_os = "linux")]
+use crate::i18n::tr;
 
 #[cfg(target_os = "linux")]
 pub(super) fn confirm(reason: &str) -> LocalAuthOutcome {
@@ -13,17 +15,26 @@ pub(super) fn confirm(reason: &str) -> LocalAuthOutcome {
             return LocalAuthOutcome::Unavailable(format!("cannot read /proc/self/stat: {error}"));
         }
     };
+    // polkit (since 121) refuses details such as polkit.message from untrusted callers, so the
+    // agent shows the exec action's generic text; name the actual request on the terminal.
+    eprintln!(
+        "{}",
+        tr!(
+            "The polkit prompt shows a generic message. It is confirming: {reason}",
+            reason = reason
+        )
+    );
     // Do not enable pkcheck's internal terminal agent. Authentication belongs to
     // the session's OS agent, with no input inherited from kc's PTY.
     // Polkit policy controls whether this check requires fresh authentication;
     // kc itself never retains or reuses an authorization result.
-    match command(reason, std::process::id(), start_time).output() {
+    match command(std::process::id(), start_time).output() {
         Ok(output) => outcome(output.status.code(), &output.stderr),
         Err(error) => LocalAuthOutcome::Unavailable(format!("cannot run pkcheck: {error}")),
     }
 }
 
-fn command(reason: &str, pid: u32, start_time: u64) -> Command {
+fn command(pid: u32, start_time: u64) -> Command {
     let mut command = Command::new("pkcheck");
     command.args([
         "--action-id",
@@ -31,9 +42,6 @@ fn command(reason: &str, pid: u32, start_time: u64) -> Command {
         "--process",
         &format!("{pid},{start_time}"),
         "--allow-user-interaction",
-        "--detail",
-        "polkit.message",
-        reason,
     ]);
     command.stdin(std::process::Stdio::null());
     command
@@ -113,8 +121,8 @@ mod tests {
     }
 
     #[test]
-    fn reason_is_one_argument_and_no_internal_agent_is_enabled() {
-        let command = command("kc: allow 'this' $(action)?", 42, 123456);
+    fn no_details_and_no_internal_agent_are_passed() {
+        let command = command(42, 123456);
         let args: Vec<_> = command
             .get_args()
             .map(|arg| arg.to_str().unwrap())
@@ -127,9 +135,6 @@ mod tests {
                 "--process",
                 "42,123456",
                 "--allow-user-interaction",
-                "--detail",
-                "polkit.message",
-                "kc: allow 'this' $(action)?",
             ]
         );
     }

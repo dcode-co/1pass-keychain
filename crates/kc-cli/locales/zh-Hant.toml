@@ -526,3 +526,4 @@
 "Still pending: {what}." = "仍待處理：{what}。"
 "No polkit authentication agent is running in this session (for example over SSH, or on a desktop without one such as hyprpolkitagent or polkit-gnome). Run this command from a desktop session that has an agent." = "此工作階段中沒有執行 polkit 驗證代理程式（例如透過 SSH 連線，或桌面上沒有 hyprpolkitagent、polkit-gnome 之類的代理程式）。請在有驗證代理程式的桌面工作階段中執行此命令。"
 "The operating system couldn't ask for confirmation: {reason}." = "作業系統無法要求確認：{reason}。"
+"The polkit prompt shows a generic message. It is confirming: {reason}" = "polkit 視窗顯示的是通用提示。正在確認的操作：{reason}"
