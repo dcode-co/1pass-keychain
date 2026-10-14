@@ -55,9 +55,22 @@ async fn pump(a: &Device<MemoryRelay>, b: &Device<MemoryRelay>) {
 }
 async fn enroll(a: &Device<MemoryRelay>, b: &Device<MemoryRelay>) {
     a.set("KEY", b"fake-initial-secret").await;
-    a.run(&["sync", "add", "KEY", "--peers", "bravo"], human(vec![]))
-        .await
-        .expect(8);
+    let out = a
+        .run(&["sync", "add", "KEY", "--peers", "bravo"], human(vec![]))
+        .await;
+    out.expect(8);
+    assert!(
+        out.stderr
+            .contains("Added KEY to sync and offered it to 1 device;"),
+        "{}",
+        out.stderr
+    );
+    assert!(
+        out.stderr
+            .contains("Still pending: waiting for review on other devices"),
+        "{}",
+        out.stderr
+    );
     pump(a, b).await;
     assert!(b.value("KEY").is_none());
     assert_eq!(state(b)["candidates"].as_object().unwrap().len(), 1);
@@ -65,6 +78,11 @@ async fn enroll(a: &Device<MemoryRelay>, b: &Device<MemoryRelay>) {
         .run(&["sync", "review"], human(vec![Answer::Select(0)]))
         .await;
     assert!([0, 8].contains(&out.code), "{}", out.stderr);
+    assert!(
+        out.stderr.contains("Accepted KEY from alpha."),
+        "{}",
+        out.stderr
+    );
     assert_eq!(
         out.prompts
             .iter()
@@ -101,6 +119,13 @@ async fn add_offer_review_local_confirmation_and_accept_on_both_sides() {
     let (a, b, _) = devices().await;
     enroll(&a, &b).await;
     assert_eq!(a.value("KEY"), b.value("KEY"));
+    let out = a.run(&["sync", "status"], Run::agent()).await;
+    out.expect(0);
+    let text = out.stdout_text();
+    assert!(text.contains("KEY  in sync  "), "{text}");
+    assert!(text.contains("  bravo\n"), "{text}");
+    assert!(text.contains("device bravo: ok\n"), "{text}");
+    assert!(!text.contains('{') && !text.contains('['), "{text}");
     a.run(&["sync", "status", "--json"], Run::agent())
         .await
         .expect(0);
@@ -156,9 +181,15 @@ async fn concurrent_changes_conflict_resolve_is_held_then_converges() {
     pump(&a, &b).await;
     assert_eq!(state(&a)["items"]["KEY"]["conflict"], true);
     assert_eq!(state(&b)["items"]["KEY"]["conflict"], true);
-    a.run(&["sync", "resolve", "KEY", "--keep", "mine"], human(vec![]))
-        .await
-        .expect(8);
+    let out = a
+        .run(&["sync", "resolve", "KEY", "--keep", "mine"], human(vec![]))
+        .await;
+    out.expect(8);
+    assert!(
+        out.stderr.contains("Resolved KEY, keeping this device;"),
+        "{}",
+        out.stderr
+    );
     pump(&a, &b).await;
     assert_eq!(b.value("KEY").unwrap(), b"fake-bravo-change");
     b.run(&["sync", "review"], human(vec![Answer::Select(0)]))
@@ -621,10 +652,12 @@ async fn legacy_overwrite_flag_and_code_receive_cannot_bypass_local_confirmation
     .expect(5);
     assert_eq!(state(&b)["candidates"].as_object().unwrap().len(), 1);
     assert_eq!(b.value("KEY").unwrap(), b"fake-initial-secret");
+    // The accepted v1 value is this device's own change, queued for the sync scope.
     b.run(&["sync", "review"], human(vec![Answer::Select(0)]))
         .await
-        .expect(0);
+        .expect(8);
     assert_eq!(b.value("KEY").unwrap(), b"fake-legacy-terminal");
+    assert!(outbox_has(&b, head(&b)));
     a.store()
         .set(
             "KEY",
@@ -1026,7 +1059,9 @@ async fn legacy_policies_hold_and_denial_continues_batch_then_one_l_replaces() {
             human(vec![Answer::Yes]),
         )
         .await;
-    out.expect(0);
+    // Pending only because the accepted v1 value is queued for the sync scope.
+    out.expect(8);
+    assert!(outbox_has(&b, head(&b)));
     assert_eq!(
         confirmations(&out),
         vec!["Replace KEY with the value from alpha"]
@@ -1585,6 +1620,215 @@ async fn rejecting_proposal_deletes_binding_and_unbound_and_rm_releases_checkpoi
     assert_eq!(b.value("KEY").unwrap(), b"fake-initial-secret");
 }
 
+fn holds_candidate(s: &Value, vid: Vid) -> bool {
+    s["candidates"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .any(|k| k.ends_with(&hex(&vid.0)))
+}
+
+#[tokio::test]
+async fn evicted_proposal_forgets_its_binding_and_unbound_entry() {
+    let (a, b, relay) = devices().await;
+    let mut offers = Vec::new();
+    for n in 0..16 {
+        let name = format!("P{n}");
+        let vid = Vid::random();
+        post(
+            &a,
+            &b,
+            &relay,
+            offer_message(&name, vid, b"fake-eviction", 0),
+        )
+        .await;
+        offers.push((name, vid));
+    }
+    b.run(&["inbox"], Run::agent()).await.expect(8);
+    assert_eq!(state(&b)["unbound"].as_array().unwrap().len(), 16);
+    b.set("LOCAL", b"fake-local").await;
+    b.run(&["sync", "add", "LOCAL", "--peers", "alpha"], human(vec![]))
+        .await
+        .expect(8);
+    let after = state(&b);
+    let (evicted, kept): (Vec<_>, Vec<_>) = offers
+        .iter()
+        .partition(|(_, vid)| !holds_candidate(&after, *vid));
+    assert_eq!(evicted.len(), 1);
+    let (name, vid) = evicted[0];
+    assert!(
+        b.store()
+            .get_internal(&fp_slot(name, *vid))
+            .unwrap()
+            .is_none()
+    );
+    let unbound = after["unbound"].as_array().unwrap();
+    assert_eq!(unbound.len(), 15);
+    assert!(!unbound.contains(&Value::from(format!("{name}:{}", hex(&vid.0)))));
+    for (name, vid) in kept {
+        assert!(
+            b.store()
+                .get_internal(&fp_slot(name, *vid))
+                .unwrap()
+                .is_some()
+        );
+    }
+}
+
+#[tokio::test]
+async fn accepting_a_proposal_at_capacity_does_not_evict_itself() {
+    let (a, b, relay) = devices().await;
+    // Not a sync item, so accepting the offer reserves a checkpoint for the local value.
+    b.set("TARGET", b"fake-target-local").await;
+    // The smallest slot name: the checkpoint reservation's first eviction choice.
+    let target = Vid([0; 16]);
+    post(
+        &a,
+        &b,
+        &relay,
+        offer_message("TARGET", target, b"fake-target-offer", 0),
+    )
+    .await;
+    let mut others = Vec::new();
+    for n in 1..16 {
+        let name = format!("P{n}");
+        let vid = Vid::random();
+        post(
+            &a,
+            &b,
+            &relay,
+            offer_message(&name, vid, b"fake-capacity", 0),
+        )
+        .await;
+        others.push((name, vid));
+    }
+    b.run(&["inbox"], Run::agent()).await.expect(8);
+    assert_eq!(state(&b)["candidates"].as_object().unwrap().len(), 16);
+    let mut answers = vec![Answer::Select(0)];
+    answers.extend(std::iter::repeat_with(|| Answer::Select(2)).take(15));
+    let out = b.run(&["sync", "review"], human(answers)).await;
+    out.expect(8);
+    assert!(
+        out.stderr.contains("Accepted TARGET from alpha."),
+        "{}",
+        out.stderr
+    );
+    assert_eq!(b.value("TARGET").unwrap(), b"fake-target-offer");
+    let s = state(&b);
+    let head: Vid = serde_json::from_value(s["items"]["TARGET"]["head"].clone()).unwrap();
+    assert_eq!(head, target);
+    assert!(
+        b.store()
+            .get_internal(&fp_slot("TARGET", target))
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(s["candidates"].as_object().unwrap().len(), 14);
+    let evicted = others
+        .iter()
+        .filter(|(_, vid)| !holds_candidate(&s, *vid))
+        .collect::<Vec<_>>();
+    assert_eq!(evicted.len(), 1);
+    let (name, vid) = evicted[0];
+    assert!(
+        b.store()
+            .get_internal(&fp_slot(name, *vid))
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn rejected_offer_tombstone_slides_on_retry_and_expires_after_silence() {
+    let (a, b, relay) = devices().await;
+    let vid = Vid::random();
+    let offer = || offer_message("PROPOSAL", vid, b"fake-tombstone", 0);
+    post(&a, &b, &relay, offer()).await;
+    b.run(&["inbox"], Run::agent()).await.expect(8);
+    b.run(&["sync", "review"], human(vec![Answer::Select(1)]))
+        .await
+        .expect(0);
+    let s = state(&b);
+    let key = s["rejected_offers"][0].as_str().unwrap().to_owned();
+    let now = kc_proto::inbox::unix_now();
+    assert!(s["rejected_until"][&key].as_i64().unwrap() > now);
+    let mut s = s;
+    s["rejected_until"][&key] = (now + 60).into();
+    save_state(&b, &s);
+    post(&a, &b, &relay, offer()).await;
+    b.run(&["inbox"], Run::agent()).await.expect(0);
+    let s = state(&b);
+    assert!(s["candidates"].as_object().unwrap().is_empty());
+    assert!(s["rejected_until"][&key].as_i64().unwrap() > now + 86400);
+    let mut s = s;
+    s["rejected_until"][&key] = 1.into();
+    save_state(&b, &s);
+    b.run(&["sync"], Run::agent()).await.expect(0);
+    let s = state(&b);
+    assert!(s["rejected_offers"].as_array().unwrap().is_empty());
+    assert!(s["rejected_until"].as_object().unwrap().is_empty());
+    post(&a, &b, &relay, offer()).await;
+    b.run(&["inbox"], Run::agent()).await.expect(8);
+    assert!(holds_candidate(&state(&b), vid));
+}
+
+#[tokio::test]
+async fn legacy_rejected_offer_array_state_still_loads() {
+    let (a, b, relay) = devices().await;
+    let vid = Vid::random();
+    let offer = || offer_message("PROPOSAL", vid, b"fake-legacy-tombstone", 0);
+    post(&a, &b, &relay, offer()).await;
+    b.run(&["inbox"], Run::agent()).await.expect(8);
+    b.run(&["sync", "review"], human(vec![Answer::Select(1)]))
+        .await
+        .expect(0);
+    // State written before expiries existed: only the tombstone array.
+    let mut s = state(&b);
+    let key = s["rejected_offers"][0].as_str().unwrap().to_owned();
+    s.as_object_mut().unwrap().remove("rejected_until");
+    save_state(&b, &s);
+    b.run(&["sync"], Run::agent()).await.expect(0);
+    let s = state(&b);
+    // Older versions still read the array; the expiry lives beside it.
+    assert_eq!(s["rejected_offers"], Value::from(vec![key.clone()]));
+    assert!(s["rejected_until"][&key].as_i64().unwrap() > kc_proto::inbox::unix_now());
+    post(&a, &b, &relay, offer()).await;
+    b.run(&["inbox"], Run::agent()).await.expect(0);
+    assert!(state(&b)["candidates"].as_object().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn unbound_entry_without_candidate_is_swept() {
+    let (a, b, relay) = devices().await;
+    let vid = Vid::random();
+    post(
+        &a,
+        &b,
+        &relay,
+        offer_message("PROPOSAL", vid, b"fake-unbound", 0),
+    )
+    .await;
+    b.run(&["inbox"], Run::agent()).await.expect(8);
+    assert!(
+        b.store()
+            .get_internal(&fp_slot("PROPOSAL", vid))
+            .unwrap()
+            .is_some()
+    );
+    // A candidate dropped without its binding, as eviction did before.
+    let mut s = state(&b);
+    s["candidates"] = serde_json::json!({});
+    save_state(&b, &s);
+    b.run(&["sync"], Run::agent()).await;
+    assert!(state(&b)["unbound"].as_array().unwrap().is_empty());
+    assert!(
+        b.store()
+            .get_internal(&fp_slot("PROPOSAL", vid))
+            .unwrap()
+            .is_none()
+    );
+}
+
 #[tokio::test]
 async fn full_capacity_scan_and_preserve_mine_leave_inbox_review_and_resolve_operational() {
     let (a, b, relay) = devices().await;
@@ -1635,7 +1879,13 @@ async fn full_capacity_scan_and_preserve_mine_leave_inbox_review_and_resolve_ope
         .run(&["sync", "resolve", "KEY", "--keep", "mine"], human(vec![]))
         .await;
     out.expect(8);
-    assert!(!out.stderr.contains("Sync storage is full"));
+    // Resolve says why nothing was resolved instead of claiming success.
+    assert!(
+        out.stderr.contains("Sync storage is full"),
+        "{}",
+        out.stderr
+    );
+    assert!(!out.stderr.contains("Resolved KEY"), "{}", out.stderr);
     assert_eq!(b.value("KEY").unwrap(), b"fake-out-of-band");
     // After capacity is freed, the same review/resolve path can recover normally.
     let mut s = state(&b);
@@ -1648,4 +1898,263 @@ async fn full_capacity_scan_and_preserve_mine_leave_inbox_review_and_resolve_ope
         .await
         .expect(8);
     assert_eq!(state(&b)["items"]["KEY"]["conflict"], false);
+}
+
+fn outbox_has(d: &Device<MemoryRelay>, vid: Vid) -> bool {
+    let wanted = serde_json::to_value(vid.0).unwrap();
+    state(d)["outbox"]["deliveries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|peer| peer[1].as_array().unwrap().iter())
+        .any(|entry| entry[0]["name"] == "KEY" && entry[0]["new_vid"] == wanted)
+}
+#[tokio::test]
+async fn legacy_accept_is_published_to_sync_scope() {
+    let (a, b, _) = devices().await;
+    enroll(&a, &b).await;
+    a.store()
+        .set(
+            "KEY",
+            b"fake-legacy-published",
+            kc_store::ItemKind::Text,
+            kc_store::Origin::Local,
+        )
+        .unwrap();
+    a.run(&["send", "KEY", "--to", "bravo"], Run::agent())
+        .await
+        .expect(0);
+    let out = b
+        .run(
+            &["inbox", "--on-conflict", "overwrite"],
+            human(vec![Answer::Yes]),
+        )
+        .await;
+    assert!([0, 8].contains(&out.code), "{}", out.stderr);
+    assert_eq!(b.value("KEY").unwrap(), b"fake-legacy-published");
+    let s = state(&b);
+    assert_eq!(s["items"]["KEY"]["own"], true);
+    let legacy_head = head(&b);
+    assert!(outbox_has(&b, legacy_head));
+    assert!(
+        s["slots"]
+            .get(format!("sync/snapshot/{}", hex(&legacy_head.0)))
+            .is_some()
+    );
+    pump(&a, &b).await;
+    assert_eq!(head(&a), head(&b));
+    assert_eq!(a.value("KEY"), b.value("KEY"));
+    assert!(state(&a)["candidates"].as_object().unwrap().is_empty());
+    assert!(state(&b)["candidates"].as_object().unwrap().is_empty());
+}
+/// Alpha's held change X, then bravo's local change: alpha resolves the conflict, keeping
+/// bravo's value, with a change naming X as a parent. Returns X's candidate key and record.
+async fn superseded_setup(a: &Device<MemoryRelay>, b: &Device<MemoryRelay>) -> (String, Value) {
+    enroll(a, b).await;
+    a.set("KEY", b"fake-alpha-superseded").await;
+    pump(a, b).await;
+    let s = state(b);
+    let (key, held) = s["candidates"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .next()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .unwrap();
+    assert_eq!(held["category"], "held");
+    b.set("KEY", b"fake-bravo-kept").await;
+    pump(a, b).await;
+    assert_eq!(state(a)["items"]["KEY"]["conflict"], true);
+    (key, held)
+}
+#[tokio::test]
+async fn review_skips_held_change_superseded_by_same_peer_resolve() {
+    let (a, b, _) = devices().await;
+    let (key, held) = superseded_setup(&a, &b).await;
+    a.run(
+        &["sync", "resolve", "KEY", "--keep", "bravo"],
+        human(vec![]),
+    )
+    .await
+    .expect(8);
+    pump(&a, &b).await;
+    let s = state(&b);
+    let candidates = s["candidates"].as_object().unwrap();
+    assert_eq!(candidates.len(), 1, "{candidates:?}");
+    assert!(!candidates.contains_key(&key));
+    assert!(s["slots"].get(&key).is_none());
+    assert!(b.store().get_internal(&key).unwrap().is_none());
+    let base = held["base_record"].as_str().unwrap();
+    assert!(b.store().get_internal(base).unwrap().is_none());
+    b.run(&["sync", "review"], human(vec![Answer::Select(0)]))
+        .await
+        .expect(0);
+    pump(&a, &b).await;
+    assert_eq!(head(&a), head(&b));
+    assert_eq!(a.value("KEY"), b.value("KEY"));
+    assert_eq!(b.value("KEY").unwrap(), b"fake-bravo-kept");
+}
+#[tokio::test]
+async fn superseded_held_survives_when_new_candidate_is_capacity_deferred() {
+    let (a, b, _) = devices().await;
+    let (key, _) = superseded_setup(&a, &b).await;
+    let mut s = state(&b);
+    for n in 0..16 {
+        let slot = format!("sync/kg/test-{n}");
+        b.store().set_internal(&slot, b"fake-pinned").unwrap();
+        s["slots"][slot] = "Checkpoint".into();
+    }
+    save_state(&b, &s);
+    a.run(
+        &["sync", "resolve", "KEY", "--keep", "bravo"],
+        human(vec![]),
+    )
+    .await
+    .expect(8);
+    pump(&a, &b).await;
+    let s = state(&b);
+    let candidates = s["candidates"].as_object().unwrap();
+    assert_eq!(candidates.len(), 1, "{candidates:?}");
+    assert!(candidates.contains_key(&key));
+    assert!(b.store().get_internal(&key).unwrap().is_some());
+}
+#[tokio::test]
+async fn retired_superseded_vid_is_not_resurrected_by_duplicate_delivery() {
+    let (a, b, relay) = devices().await;
+    let (key, held) = superseded_setup(&a, &b).await;
+    a.run(
+        &["sync", "resolve", "KEY", "--keep", "bravo"],
+        human(vec![]),
+    )
+    .await
+    .expect(8);
+    pump(&a, &b).await;
+    assert!(
+        !state(&b)["candidates"]
+            .as_object()
+            .unwrap()
+            .contains_key(&key)
+    );
+    let version = &held["version"];
+    post(
+        &a,
+        &b,
+        &relay,
+        SyncMsg::Changes {
+            changes: vec![Change {
+                name: ItemName::new("KEY").unwrap(),
+                generation: held["generation"].as_u64().unwrap(),
+                new_vid: serde_json::from_value(version["vid"].clone()).unwrap(),
+                parents: serde_json::from_value(version["parents"].clone()).unwrap(),
+                lineage: serde_json::from_value(version["lineage"].clone()).unwrap(),
+                op: Op::Put {
+                    kind: kc_proto::sync::ItemKind::Text,
+                    value: SecretBytes::from_slice(b"fake-alpha-superseded"),
+                },
+                approval_ref: None,
+            }],
+        },
+    )
+    .await;
+    b.run(&["inbox"], Run::agent()).await.expect(8);
+    let s = state(&b);
+    let candidates = s["candidates"].as_object().unwrap();
+    assert_eq!(candidates.len(), 1, "{candidates:?}");
+    assert!(!candidates.contains_key(&key));
+}
+#[tokio::test]
+async fn reordered_superseded_held_change_stays_retired_after_successor_is_rejected() {
+    let (a, b, relay) = devices().await;
+    enroll(&a, &b).await;
+    let base = head(&b);
+    let (x, z) = (Vid::random(), Vid::random());
+    let change = |vid: Vid, parents: Vec<Vid>, value: &[u8]| SyncMsg::Changes {
+        changes: vec![Change {
+            name: ItemName::new("KEY").unwrap(),
+            generation: 1,
+            new_vid: vid,
+            lineage: parents.iter().copied().chain([vid]).collect(),
+            parents,
+            op: Op::Put {
+                kind: kc_proto::sync::ItemKind::Text,
+                value: SecretBytes::from_slice(value),
+            },
+            approval_ref: None,
+        }],
+    };
+    let superseded = change(x, vec![base], b"fake-reordered-x");
+    // The successor Z, naming X as a parent, arrives first.
+    post(
+        &a,
+        &b,
+        &relay,
+        change(z, vec![base, x], b"fake-reordered-z"),
+    )
+    .await;
+    b.run(&["inbox"], Run::agent()).await.expect(8);
+    post(&a, &b, &relay, superseded.clone()).await;
+    b.run(&["inbox"], Run::agent()).await.expect(8);
+    let s = state(&b);
+    let candidates = s["candidates"].as_object().unwrap();
+    assert_eq!(candidates.len(), 1, "{candidates:?}");
+    assert!(candidates.keys().all(|k| k.ends_with(&hex(&z.0))));
+    b.run(&["sync", "review"], human(vec![Answer::Select(1)]))
+        .await
+        .expect(0);
+    post(&a, &b, &relay, superseded).await;
+    b.run(&["inbox"], Run::agent()).await.expect(0);
+    assert!(state(&b)["candidates"].as_object().unwrap().is_empty());
+    assert_eq!(b.value("KEY").unwrap(), b"fake-initial-secret");
+}
+#[tokio::test]
+async fn review_accept_after_local_edit_reports_conflict_instead_of_accepted() {
+    let (a, b, _) = devices().await;
+    enroll(&a, &b).await;
+    a.set("KEY", b"fake-incoming").await;
+    pump(&a, &b).await;
+    b.set("KEY", b"fake-intervening-local").await;
+    let out = b
+        .run(&["sync", "review"], human(vec![Answer::Select(0)]))
+        .await;
+    out.expect(8);
+    assert!(!out.stderr.contains("Accepted KEY"), "{}", out.stderr);
+    assert!(
+        out.stderr
+            .contains("KEY changed on this device meanwhile and is now a conflict"),
+        "{}",
+        out.stderr
+    );
+    assert_eq!(b.value("KEY").unwrap(), b"fake-intervening-local");
+}
+#[tokio::test]
+async fn resolve_at_full_capacity_reports_storage_full_instead_of_resolved() {
+    let (a, b, _) = devices().await;
+    enroll(&a, &b).await;
+    let mut s = state(&b);
+    for n in 0..16 {
+        let slot = format!("sync/kg/test-{n}");
+        b.store().set_internal(&slot, b"fake-pinned").unwrap();
+        s["slots"][slot] = "Checkpoint".into();
+    }
+    save_state(&b, &s);
+    b.store()
+        .set(
+            "KEY",
+            b"fake-out-of-band",
+            kc_store::ItemKind::Text,
+            kc_store::Origin::Local,
+        )
+        .unwrap();
+    let out = b
+        .run(&["sync", "resolve", "KEY", "--keep", "mine"], human(vec![]))
+        .await;
+    out.expect(8);
+    assert!(!out.stderr.contains("Resolved KEY"), "{}", out.stderr);
+    assert!(
+        out.stderr
+            .contains("Sync storage is full; review pending items before retrying."),
+        "{}",
+        out.stderr
+    );
+    assert_eq!(state(&b)["items"]["KEY"]["conflict"], true);
 }

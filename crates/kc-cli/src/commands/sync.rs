@@ -20,6 +20,16 @@ pub(super) async fn run<H: Host>(ctx: &mut Ctx<'_, H>, args: SyncArgs) -> Result
         let code = sync::actions::command(ctx, command)?;
         if !quiet {
             sync::flush(ctx, false).await?;
+            if code == 8 {
+                let notes = sync::actions::pending_notes(&State::load(&ctx.state)?);
+                if !notes.is_empty() {
+                    say!(
+                        ctx,
+                        "{}",
+                        tr!("Still pending: {what}.", what = notes.join("; "))
+                    );
+                }
+            }
         }
         return Ok(code);
     }

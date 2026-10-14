@@ -99,18 +99,7 @@ fn prepare_local<H: Host>(
         new_vid: map::vid(vid),
         parents: parents.iter().copied().map(map::vid).collect(),
         snapshot_slot: slot.clone(),
-        targets: item
-            .scope
-            .iter()
-            .filter_map(|p| {
-                s.generations
-                    .outgoing_generation(&PeerId(p.clone()), name)
-                    .map(|generation| QueueTarget {
-                        peer: PeerId(p.clone()),
-                        generation,
-                    })
-            })
-            .collect(),
+        targets: targets(s, name),
     };
     let lineage = kc_sync::Lineage::new(item.lineage.iter().chain(&parents).copied().map(map::vid))
         .with_head(map::vid(vid))
@@ -137,6 +126,22 @@ fn prepare_local<H: Host>(
         },
     )?;
     Ok((record, version))
+}
+/// Scope devices which have accepted this item's current generation from us.
+fn targets(s: &State, name: &str) -> Vec<QueueTarget> {
+    s.items.get(name).map_or_else(Vec::new, |item| {
+        item.scope
+            .iter()
+            .filter_map(|p| {
+                s.generations
+                    .outgoing_generation(&PeerId(p.clone()), name)
+                    .map(|generation| QueueTarget {
+                        peer: PeerId(p.clone()),
+                        generation,
+                    })
+            })
+            .collect()
+    })
 }
 fn finish_local<H: Host>(
     ctx: &Ctx<'_, H>,
@@ -291,6 +296,7 @@ pub(crate) fn scan<H: Host>(ctx: &mut Ctx<'_, H>, s: &mut State) -> Result<()> {
             super::receive::preserve_mine(ctx, s, &name, &item)?;
         }
     }
+    retire_superseded(s, ctx.host.now());
     s.cleanup(ctx)
 }
 fn scan_one<H: Host>(ctx: &mut Ctx<'_, H>, s: &mut State, name: &str) -> Result<()> {
@@ -357,19 +363,20 @@ pub(super) fn publish_current<H: Host>(
     finish_local(ctx, s, &r, &v, false)?;
     clear_intent(ctx, s)
 }
+/// Returns false when sync storage is full and nothing was resolved.
 pub(super) fn resolve_value<H: Host>(
     ctx: &mut Ctx<'_, H>,
     s: &mut State,
     name: &str,
     value: &[u8],
     kind: ItemKind,
-) -> Result<()> {
+) -> Result<bool> {
     let item = &s.items[name];
     if !item.conflict
         && !s.candidates.values().any(|c| c.version.name == name)
         && current(ctx, name)?.is_some_and(|v| v.1 == kind && v.0.as_slice() == value)
     {
-        return Ok(());
+        return Ok(true);
     }
     let mut parents = vec![item.head];
     parents.extend(
@@ -388,7 +395,8 @@ pub(super) fn resolve_value<H: Host>(
                 ctx,
                 tr!("Sync storage is full; review pending items before retrying."),
             )?;
-            return s.save(&ctx.state);
+            s.save(&ctx.state)?;
+            return Ok(false);
         }
         Err(error) => return Err(error),
     };
@@ -396,9 +404,25 @@ pub(super) fn resolve_value<H: Host>(
     interrupted(ctx)?;
     put_blob(ctx, &v.slot, kind, value)?;
     finish_local(ctx, s, &r, &v, true)?;
-    clear_intent(ctx, s)
+    clear_intent(ctx, s)?;
+    Ok(true)
 }
-pub(super) fn accept<H: Host>(ctx: &mut Ctx<'_, H>, s: &mut State, c: &Candidate) -> Result<bool> {
+/// What `accept` did with a candidate, so callers report only what happened.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Accepted {
+    Applied,
+    /// The value or head changed here since receipt; the candidate is now a conflict.
+    Conflict,
+    /// The item is in conflict and this candidate does not settle it (already reported).
+    Unsettled,
+    /// No room for the checkpoint; sync storage is full.
+    Full,
+}
+pub(super) fn accept<H: Host>(
+    ctx: &mut Ctx<'_, H>,
+    s: &mut State,
+    c: &Candidate,
+) -> Result<Accepted> {
     let name = &c.version.name;
     let now = current(ctx, name)?;
     let actual = now.as_ref().map_or(Fp([0; 32]), |v| v.2);
@@ -418,7 +442,7 @@ pub(super) fn accept<H: Host>(ctx: &mut Ctx<'_, H>, s: &mut State, c: &Candidate
             item.conflict = true;
         }
         s.save(&ctx.state)?;
-        return Ok(false);
+        return Ok(Accepted::Conflict);
     }
     // While the item is in conflict, only `kc sync resolve` may settle it: accepting a
     // proposal or held change here would drop the other candidates (§2.4).
@@ -446,11 +470,11 @@ pub(super) fn accept<H: Host>(ctx: &mut Ctx<'_, H>, s: &mut State, c: &Candidate
                 name = name
             )
         );
-        return Ok(false);
+        return Ok(Accepted::Unsettled);
     }
     if c.retire {
         super::actions::remove(ctx, s, name)?;
-        return Ok(true);
+        return Ok(Accepted::Applied);
     }
     let value = blob(ctx, &c.version.slot)?;
     let fp = fingerprint(ctx, name, value.kind, value.value.expose())?;
@@ -460,9 +484,16 @@ pub(super) fn accept<H: Host>(ctx: &mut Ctx<'_, H>, s: &mut State, c: &Candidate
         None
     };
     if let Some(slot) = &checkpoint
-        && !reserve(ctx, s, slot, SlotKind::Checkpoint, false)?
+        && !reserve_keeping(
+            ctx,
+            s,
+            slot,
+            SlotKind::Checkpoint,
+            false,
+            Some(&c.version.slot),
+        )?
     {
-        return Ok(false);
+        return Ok(Accepted::Full);
     }
     let lineage =
         kc_sync::Lineage::new(c.version.lineage.iter().copied().chain(head).map(map::vid))
@@ -508,7 +539,7 @@ pub(super) fn accept<H: Host>(ctx: &mut Ctx<'_, H>, s: &mut State, c: &Candidate
     interrupted(ctx)?;
     finish_remote(ctx, s, &r, c)?;
     clear_intent(ctx, s)?;
-    Ok(true)
+    Ok(Accepted::Applied)
 }
 fn finish_remote<H: Host>(
     ctx: &Ctx<'_, H>,
@@ -578,7 +609,104 @@ fn finish_remote<H: Host>(
         );
     }
     clear_candidates(s, name);
+    if c.legacy {
+        publish_legacy(ctx, s, r, c)?;
+    }
     s.save(&ctx.state)
+}
+/// A value accepted from a v1 sender is this device's own change: its vid was minted here
+/// with the previous head as parent, so it goes to the scope like any local change (§2.8).
+/// Idempotent for journal recovery, which reruns it only while the keychain holds the value.
+fn publish_legacy<H: Host>(
+    ctx: &Ctx<'_, H>,
+    s: &mut State,
+    r: &RemoteJournalRecord,
+    c: &Candidate,
+) -> Result<()> {
+    let name = &r.change_id.name;
+    let vid = c.version.vid;
+    let (value, kind, _) = current(ctx, name)?.ok_or_else(state_error)?;
+    s.items.get_mut(name).ok_or_else(state_error)?.own = true;
+    let slot = snapshot_slot(vid);
+    s.versions.insert(
+        vid_key(vid),
+        Version {
+            name: name.clone(),
+            vid,
+            parents: c.version.parents.clone(),
+            lineage: r.lineage.iter().copied().map(map::wire_vid).collect(),
+            kind,
+            slot: slot.clone(),
+        },
+    );
+    s.latest_local.insert(name.clone(), vid);
+    // The candidate slot was released just before, so this reservation is a net zero.
+    if !reserve(ctx, s, &slot, SlotKind::ConflictCandidate, true)? {
+        // The next digest's resend recreates the snapshot and queues the change.
+        return log(
+            ctx,
+            tr!("Sync storage is full; review pending items before retrying."),
+        );
+    }
+    if ctx.store.get_internal(&slot)?.is_none() {
+        put_blob(ctx, &slot, kind, &value)?;
+    }
+    for target in targets(s, name) {
+        s.outbox.enqueue(
+            target.peer,
+            kc_sync::ChangeId {
+                name: name.clone(),
+                generation: target.generation,
+                new_vid: map::vid(vid),
+            },
+        );
+    }
+    Ok(())
+}
+/// A later change from the same peer naming an open held candidate as a parent
+/// supersedes it: that peer already replaced the value (§2.4).
+pub(super) fn is_superseded(s: &State, old: &Candidate) -> bool {
+    old.category == CandidateKind::Held
+        && !old.invalid_binding
+        && !old.legacy
+        && !old.retire
+        && s.candidates.values().any(|new| {
+            // Parents are not authenticated: only the same peer may supersede its change.
+            new.peer == old.peer
+                && new.version.name == old.version.name
+                && new.generation == old.generation
+                && new.version.vid != old.version.vid
+                && !new.invalid_binding
+                && new.version.parents.contains(&old.version.vid)
+        })
+}
+pub(super) fn retire_superseded(s: &mut State, now: i64) {
+    let keys: Vec<_> = s
+        .candidates
+        .iter()
+        .filter(|(_, c)| is_superseded(s, c))
+        .map(|(k, _)| k.clone())
+        .collect();
+    for key in keys {
+        if let Some(old) = s.candidates.remove(&key) {
+            release(s, &old.version.slot);
+            s.gc.insert(old.base_record);
+            // The vid binding stays in known for the immutable-vid check. Held was already
+            // acknowledged, so no Rejected ACK is sent; the receipt stops a late duplicate.
+            s.receipts.insert(
+                delivery_key(
+                    &old.peer,
+                    &old.version.name,
+                    old.generation,
+                    old.version.vid,
+                ),
+                (
+                    kc_proto::sync::AckResult::Rejected,
+                    now.saturating_add(3 * 86400),
+                ),
+            );
+        }
+    }
 }
 pub(super) fn queue(s: &mut State, peer: &str, message: Control) {
     // Coalesce metadata-only controls; messages never contain values or fingerprints.
@@ -692,4 +820,55 @@ fn collect_orphan_snapshots<H: Host>(ctx: &Ctx<'_, H>, s: &mut State) -> Result<
         s.cleanup(ctx)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Candidate, CandidateKind, State, Version, Vid, is_superseded};
+
+    fn candidate(peer: &str, vid: u8, parents: &[u8], category: CandidateKind) -> Candidate {
+        Candidate {
+            peer: peer.into(),
+            version: Version {
+                name: "KEY".into(),
+                vid: Vid([vid; 16]),
+                parents: parents.iter().map(|p| Vid([*p; 16])).collect(),
+                lineage: vec![],
+                kind: kc_proto::sync::ItemKind::Text,
+                slot: format!("{peer}/{vid}"),
+            },
+            generation: 1,
+            category,
+            base_head: None,
+            base_record: String::new(),
+            retire: false,
+            legacy: false,
+            invalid_binding: false,
+        }
+    }
+    fn with(candidates: &[&Candidate]) -> State {
+        let mut s = State::default();
+        for c in candidates {
+            s.candidates.insert(c.version.slot.clone(), (*c).clone());
+        }
+        s
+    }
+
+    #[test]
+    fn is_superseded_requires_same_peer() {
+        let old = candidate("alpha", 1, &[0], CandidateKind::Held);
+        let successor = candidate("alpha", 2, &[1, 3], CandidateKind::Held);
+        assert!(is_superseded(&with(&[&old, &successor]), &old));
+        assert!(!is_superseded(&with(&[&old]), &old));
+        let forged = candidate("bravo", 2, &[1, 3], CandidateKind::Held);
+        assert!(!is_superseded(&with(&[&old, &forged]), &old));
+        let conflict = candidate("alpha", 1, &[0], CandidateKind::Conflict);
+        assert!(!is_superseded(&with(&[&conflict, &successor]), &conflict));
+        let mut legacy = old.clone();
+        legacy.legacy = true;
+        assert!(!is_superseded(&with(&[&legacy, &successor]), &legacy));
+        let mut stale = successor.clone();
+        stale.generation = 2;
+        assert!(!is_superseded(&with(&[&old, &stale]), &old));
+    }
 }

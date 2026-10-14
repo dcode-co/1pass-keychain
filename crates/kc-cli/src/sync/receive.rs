@@ -44,10 +44,11 @@ pub(crate) fn receive<H: Host>(ctx: &mut Ctx<'_, H>, peer: &str, message: &SyncM
                     ctx,
                     tr!("Ignored a stale sync offer for {name}.", name = name),
                 )?;
-            } else if s
-                .rejected_offers
-                .contains(&delivery_key(peer, name, *known_generation, *vid))
-            {
+            } else if offer_rejected(
+                &mut s,
+                &delivery_key(peer, name, *known_generation, *vid),
+                ctx.host.now(),
+            ) {
                 // A rejected proposal is never resurrected by a transport retry.
             } else if lineage.len() <= 64
                 && value.expose().len() <= 200 * 1024
@@ -422,6 +423,7 @@ fn change_received<H: Host>(
             .insert(name.into());
     }
     let mut result = map::wire_ack(decision.ack);
+    let mut retired = false;
     match decision.transition {
         Transition::Hold { .. } | Transition::Conflict { .. } => {
             let category = if result == AckResult::Conflict {
@@ -452,8 +454,16 @@ fn change_received<H: Host>(
                 false,
             )? {
                 result = AckResult::DeferredCapacity;
-            } else if category == CandidateKind::Conflict {
-                s.items.get_mut(name).unwrap().conflict = true;
+            } else {
+                if category == CandidateKind::Conflict {
+                    s.items.get_mut(name).unwrap().conflict = true;
+                }
+                // Only a stored successor may retire the held change it supersedes.
+                transaction::retire_superseded(s, ctx.host.now());
+                // Reordered delivery: the successor arrived first, so this change retired
+                // at once. Its Rejected receipt must stand; the ACK stays Held, as in order.
+                // A Rejected receipt returned early above, so here only retirement wrote it.
+                retired = matches!(s.receipts.get(&delivery), Some((AckResult::Rejected, _)));
             }
         }
         Transition::Advance {
@@ -503,7 +513,7 @@ fn change_received<H: Host>(
         // No verified approval is ever constructed in Phase 1.
         _ => return Err(state_error()),
     }
-    if result != AckResult::DeferredCapacity {
+    if result != AckResult::DeferredCapacity && !retired {
         s.receipts
             .insert(delivery, (result, ctx.host.now().saturating_add(3 * 86400)));
     }
@@ -765,7 +775,7 @@ pub(crate) fn legacy<H: Host>(
             return Err(error);
         }
         let c = s.candidates[&slot].clone();
-        if transaction::accept(ctx, &mut s, &c)? {
+        if transaction::accept(ctx, &mut s, &c)? == transaction::Accepted::Applied {
             return Ok(Some(kc_proto::ItemStatus::Stored));
         }
     }

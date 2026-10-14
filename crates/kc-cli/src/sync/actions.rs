@@ -1,7 +1,7 @@
 use super::*;
 use crate::cli::{SyncCommand, SyncPeerCommand};
 use state::{CandidateKind, Control, Item, Offer, Peer};
-use transaction::{blob, put_blob, queue};
+use transaction::{Accepted, blob, put_blob, queue};
 
 pub(crate) fn label<H: Host>(ctx: &Ctx<'_, H>, peer: &str) -> Result<String> {
     if peer == "mine" {
@@ -126,6 +126,90 @@ pub(crate) fn remove<H: Host>(ctx: &Ctx<'_, H>, s: &mut State, name: &str) -> Re
     super::transport::collect_snapshots(s);
     s.cleanup(ctx)
 }
+/// One `kc sync status` row for people: an item (`peers`) or a candidate (`peer`).
+fn row_line(row: &serde_json::Value) -> String {
+    let peers = match (&row["peer"], &row["peers"]) {
+        (serde_json::Value::String(peer), _) => peer.clone(),
+        (_, serde_json::Value::Array(peers)) if !peers.is_empty() => peers
+            .iter()
+            .filter_map(|p| p.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
+        _ => "-".into(),
+    };
+    format!(
+        "{}  {}  {}  {}",
+        row["name"].as_str().unwrap_or(""),
+        row["state"].as_str().unwrap_or(""),
+        row["fingerprint"].as_str().unwrap_or("-"),
+        peers
+    )
+}
+/// One device line for people, naming only what needs attention.
+fn peer_line(peer: &serde_json::Value) -> String {
+    let count = |key: &str| peer[key].as_array().map_or(0, Vec::len);
+    let mut flags = Vec::new();
+    if peer["enabled"] == false {
+        flags.push(tr!("removed from sync"));
+    }
+    if peer["v2"] == false {
+        flags.push(tr!("hasn't answered the sync handshake yet"));
+    }
+    if peer["breaker"] == true {
+        flags.push(tr!("paused after too many changes"));
+    }
+    if count("quarantine") > 0 {
+        flags.push(tr!("quarantined: {n}", n = count("quarantine")));
+    }
+    if count("reoffer") > 0 {
+        flags.push(tr!("re-offer needed: {n}", n = count("reoffer")));
+    }
+    let state = if flags.is_empty() {
+        tr!("ok")
+    } else {
+        flags.join(", ")
+    };
+    tr!(
+        "device {label}: {state}",
+        label = peer["label"].as_str().unwrap_or(""),
+        state = state
+    )
+}
+/// What keeps sync at exit code 8, for people. Mirrors [`pending`].
+pub(crate) fn pending_notes(s: &State) -> Vec<String> {
+    let mut notes = Vec::new();
+    if s.frozen {
+        notes.push(tr!("sync is frozen (`kc sync unfreeze`)"));
+    }
+    if s.capacity_blocked {
+        notes.push(tr!("sync storage is full"));
+    }
+    if !s.offers.is_empty() {
+        notes.push(tr!("waiting for review on other devices"));
+    }
+    if !s.candidates.is_empty() {
+        notes.push(tr!("changes to review here (`kc sync review`)"));
+    }
+    if s.items.values().any(|i| i.conflict) {
+        notes.push(tr!("conflicts to resolve (`kc sync resolve`)"));
+    }
+    if s.reconnect
+        || s.delivery_failed
+        || s.peers
+            .keys()
+            .any(|p| s.outbox.pending(&PeerId(p.clone())).next().is_some())
+    {
+        notes.push(tr!("changes queued for delivery (`kc sync`)"));
+    }
+    if s.peers.iter().any(|(p, peer)| {
+        !peer.reoffer.is_empty()
+            || !peer.quarantine.is_empty()
+            || s.limiter.is_tripped(&PeerId(p.clone()))
+    }) {
+        notes.push(tr!("a device needs attention (`kc sync status`)"));
+    }
+    notes
+}
 pub(crate) fn status<H: Host>(ctx: &mut Ctx<'_, H>, json: bool) -> Result<i32> {
     let _items = ctx.state.lock_items(ctx.store.namespace())?;
     let _state = ctx.state.lock()?;
@@ -206,21 +290,10 @@ pub(crate) fn status<H: Host>(ctx: &mut Ctx<'_, H>, json: bool) -> Result<i32> {
         )?;
     } else {
         for row in rows.iter().chain(&candidates) {
-            ctx.emit(
-                format!(
-                    "{}  {}  {}  {}\n",
-                    row["name"].as_str().unwrap_or(""),
-                    row["state"].as_str().unwrap_or(""),
-                    row["fingerprint"].as_str().unwrap_or("-"),
-                    row.get("peer")
-                        .cloned()
-                        .unwrap_or_else(|| row["peers"].clone())
-                )
-                .as_bytes(),
-            )?;
+            ctx.emit(format!("{}\n", row_line(row)).as_bytes())?;
         }
-        for peer in peers {
-            ctx.emit(format!("{}\n", peer).as_bytes())?;
+        for peer in &peers {
+            ctx.emit(format!("{}\n", peer_line(peer)).as_bytes())?;
         }
         if s.capacity_blocked {
             crate::commands::say!(
@@ -260,11 +333,16 @@ pub(crate) fn review<H: Host>(ctx: &mut Ctx<'_, H>) -> Result<i32> {
         s.candidates
             .values()
             .filter(|c| c.category != CandidateKind::Conflict)
+            .filter(|c| !transaction::is_superseded(&s, c))
             .cloned()
             .collect::<Vec<_>>()
     };
+    if candidates.is_empty() {
+        crate::commands::say!(ctx, "{}", tr!("Nothing to review."));
+    }
     let mut accepts = Vec::new();
     let mut rejects = Vec::new();
+    let mut later = Vec::new();
     for c in candidates {
         let fingerprint = if c.retire {
             "-".into()
@@ -291,7 +369,7 @@ pub(crate) fn review<H: Host>(ctx: &mut Ctx<'_, H>) -> Result<i32> {
         )? {
             0 => accepts.push(c),
             1 => rejects.push(c),
-            _ => {}
+            _ => later.push(c.version.name),
         }
     }
     if !accepts.is_empty() || !rejects.is_empty() {
@@ -334,13 +412,15 @@ pub(crate) fn review<H: Host>(ctx: &mut Ctx<'_, H>) -> Result<i32> {
     let _state = ctx.state.lock()?;
     let mut s = State::load(&ctx.state)?;
     scan(ctx, &mut s)?;
+    let mut done = Vec::new();
     for c in rejects {
         if let Some(current) = s.candidates.remove(&c.version.slot) {
+            done.push(tr!("Rejected {name}.", name = c.version.name));
             release(&mut s, &current.version.slot);
             s.gc.insert(current.base_record);
             let delivery = delivery_key(&c.peer, &c.version.name, c.generation, c.version.vid);
             if c.category == CandidateKind::Proposal {
-                s.rejected_offers.insert(delivery);
+                reject_offer(&mut s, delivery, ctx.host.now());
                 forget_binding(&mut s, &c.version.name, c.version.vid);
             } else {
                 s.receipts.insert(
@@ -374,10 +454,31 @@ pub(crate) fn review<H: Host>(ctx: &mut Ctx<'_, H>) -> Result<i32> {
         if let Some(current) = s.candidates.get(&c.version.slot).cloned()
             && current.category != CandidateKind::Conflict
         {
-            transaction::accept(ctx, &mut s, &current)?;
+            match transaction::accept(ctx, &mut s, &current)? {
+                Accepted::Applied => done.push(tr!(
+                    "Accepted {name} from {peer}.",
+                    name = c.version.name,
+                    peer = label(ctx, &c.peer)?
+                )),
+                Accepted::Conflict => done.push(tr!(
+                    "{name} changed on this device meanwhile and is now a conflict; settle it with `kc sync resolve {name}`.",
+                    name = c.version.name
+                )),
+                // accept() already said which conflict must be settled first.
+                Accepted::Unsettled => {}
+                Accepted::Full => done.push(tr!(
+                    "Sync storage is full; review pending items before retrying."
+                )),
+            }
         }
     }
     s.cleanup(ctx)?;
+    for line in done {
+        crate::commands::say!(ctx, "{line}");
+    }
+    for name in later {
+        crate::commands::say!(ctx, "{}", tr!("Left {name} for later.", name = name));
+    }
     Ok(if pending(&s) { 8 } else { 0 })
 }
 pub(crate) fn command<H: Host>(ctx: &mut Ctx<'_, H>, mut command: SyncCommand) -> Result<i32> {
@@ -442,9 +543,11 @@ pub(crate) fn command<H: Host>(ctx: &mut Ctx<'_, H>, mut command: SyncCommand) -
     let _state = ctx.state.lock()?;
     let mut s = State::load(&ctx.state)?;
     recover(ctx, &mut s)?;
+    let mut done = Vec::new();
     match command {
         SyncCommand::Add { names, peers } => {
             let peers = selected_peers(ctx, &s, &peers)?;
+            let mut added = Vec::new();
             for name in &names {
                 crate::values::item_name(name)?;
                 let (v, _, _) = current(ctx, name)?.ok_or_else(state_error)?;
@@ -472,6 +575,28 @@ pub(crate) fn command<H: Host>(ctx: &mut Ctx<'_, H>, mut command: SyncCommand) -
                 }
                 let _ = (value, kind);
                 offer(ctx, &mut s, &name, &peers)?;
+                added.push(name);
+            }
+            for name in added {
+                done.push(match peers.len() {
+                    0 => tr!(
+                        "Added {name} to sync; there is no paired device to offer it to yet.",
+                        name = name
+                    ),
+                    n => crate::commands::plural_tr(
+                        n,
+                        tr!(
+                            "Added {name} to sync and offered it to {n} device; accept it there with `kc sync review`.",
+                            name = name,
+                            n = n
+                        ),
+                        tr!(
+                            "Added {name} to sync and offered it to {n} devices; accept it on each with `kc sync review`.",
+                            name = name,
+                            n = n
+                        ),
+                    ),
+                });
             }
         }
         SyncCommand::Offer { names, peers } => {
@@ -531,10 +656,19 @@ pub(crate) fn command<H: Host>(ctx: &mut Ctx<'_, H>, mut command: SyncCommand) -
                 return Err(state_error());
             }
             let value = blob(ctx, &checkpoint_slot(&name))?;
-            transaction::resolve_value(ctx, &mut s, &name, value.value.expose(), value.kind)?;
+            if !transaction::resolve_value(ctx, &mut s, &name, value.value.expose(), value.kind)? {
+                done.push(tr!(
+                    "Sync storage is full; review pending items before retrying."
+                ));
+            }
         }
         SyncCommand::Resolve { name, keep } => {
             scan(ctx, &mut s)?;
+            let choice = if keep == "mine" {
+                tr!("this device")
+            } else {
+                keep.clone()
+            };
             let was_proposal = !s.items.contains_key(&name);
             if was_proposal {
                 let scope = s
@@ -600,7 +734,15 @@ pub(crate) fn command<H: Host>(ctx: &mut Ctx<'_, H>, mut command: SyncCommand) -
                 let value = blob(ctx, &c.version.slot)?;
                 (Zeroizing::new(value.value.expose().to_vec()), value.kind)
             };
-            transaction::resolve_value(ctx, &mut s, &name, &value, kind)?;
+            done.push(if transaction::resolve_value(ctx, &mut s, &name, &value, kind)? {
+                tr!(
+                    "Resolved {name}, keeping {choice}; the other devices review it with `kc sync review`.",
+                    name = name,
+                    choice = choice
+                )
+            } else {
+                tr!("Sync storage is full; review pending items before retrying.")
+            });
         }
         SyncCommand::Peer { command } => match command {
             SyncPeerCommand::List => {
@@ -667,5 +809,40 @@ pub(crate) fn command<H: Host>(ctx: &mut Ctx<'_, H>, mut command: SyncCommand) -
         _ => {}
     }
     s.cleanup(ctx)?;
+    for line in done {
+        crate::commands::say!(ctx, "{line}");
+    }
     Ok(if pending(&s) { 8 } else { 0 })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{peer_line, row_line};
+    use serde_json::json;
+
+    #[test]
+    fn status_rows_list_peers_without_json_syntax() {
+        let item = json!({"name": "KEY", "state": "in sync", "fingerprint": "ab12",
+            "peers": ["omarchy", "host.local"]});
+        assert_eq!(row_line(&item), "KEY  in sync  ab12  omarchy, host.local");
+        let lonely = json!({"name": "KEY", "state": "in sync", "fingerprint": null, "peers": []});
+        assert_eq!(row_line(&lonely), "KEY  in sync  -  -");
+        let candidate = json!({"name": "KEY", "state": "proposal", "peer": "omarchy",
+            "vid": [0], "fingerprint": "cd34"});
+        assert_eq!(row_line(&candidate), "KEY  proposal  cd34  omarchy");
+    }
+
+    #[test]
+    fn status_peer_lines_name_only_what_needs_attention() {
+        let healthy = json!({"label": "omarchy", "enabled": true, "v2": true, "breaker": false,
+            "quarantine": [], "last_digest": 1, "reoffer": []});
+        assert_eq!(peer_line(&healthy), "device omarchy: ok");
+        let troubled = json!({"label": "host.local", "enabled": false, "v2": false,
+            "breaker": true, "quarantine": ["A", "B"], "last_digest": null, "reoffer": ["A"]});
+        assert_eq!(
+            peer_line(&troubled),
+            "device host.local: removed from sync, hasn't answered the sync handshake yet, \
+             paused after too many changes, quarantined: 2, re-offer needed: 1"
+        );
+    }
 }

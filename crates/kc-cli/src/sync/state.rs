@@ -86,6 +86,9 @@ pub struct State {
     pub deferred: BTreeSet<String>,
     #[serde(default)]
     pub rejected_offers: BTreeSet<String>,
+    /// Expiry of each `rejected_offers` entry, kept apart so older versions still read it.
+    #[serde(default)]
+    pub rejected_until: BTreeMap<String, i64>,
     #[serde(default)]
     pub unbound: BTreeSet<String>,
     pub items: BTreeMap<String, Item>,
@@ -124,6 +127,7 @@ impl State {
             .map_err(|_| super::state_error())
     }
     pub fn cleanup<H: Host>(&mut self, ctx: &Ctx<'_, H>) -> Result<()> {
+        super::prune(self, ctx.host.now());
         // A binding scheduled for deletion may have become live again in the same
         // transaction (an accepted proposal evicted by its own checkpoint reservation).
         let live: BTreeSet<String> = self

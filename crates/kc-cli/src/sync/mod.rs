@@ -32,14 +32,16 @@ pub(crate) fn state_error() -> CliError {
     ))
 }
 pub(crate) fn human<H: Host>(ctx: &mut Ctx<'_, H>, reason: &str) -> Result<()> {
-    if !ctx.interactive() || ctx.host.local_confirm(reason) != LocalAuthOutcome::Confirmed {
-        return Err(
-            CliError::interaction(tr!("Sync needs local confirmation.")).with_hint(tr!(
-                "Run this command at a terminal and confirm in the operating system."
-            )),
-        );
-    }
-    Ok(())
+    let hint = if !ctx.interactive() {
+        tr!("Run this command at a terminal and confirm in the operating system.")
+    } else {
+        match ctx.host.local_confirm(reason) {
+            LocalAuthOutcome::Confirmed => return Ok(()),
+            // Unavailable carries why (e.g. no polkit agent); say so instead of the generic hint.
+            outcome => outcome.hint(),
+        }
+    };
+    Err(CliError::interaction(tr!("Sync needs local confirmation.")).with_hint(hint))
 }
 pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -177,6 +179,17 @@ fn reserve<H: Host>(
     kind: SlotKind,
     snapshot: bool,
 ) -> Result<bool> {
+    reserve_keeping(ctx, s, slot, kind, snapshot, None)
+}
+/// Like `reserve`, but never evicts `keep`: the candidate whose acceptance needs the slot.
+fn reserve_keeping<H: Host>(
+    ctx: &Ctx<'_, H>,
+    s: &mut State,
+    slot: &str,
+    kind: SlotKind,
+    snapshot: bool,
+    keep: Option<&str>,
+) -> Result<bool> {
     if let Some(existing) = s.slots.get_mut(slot) {
         if kind > *existing {
             *existing = kind;
@@ -199,6 +212,9 @@ fn reserve<H: Host>(
             return Err(state_error());
         }
     }
+    if let Some(keep) = keep {
+        budget.pin(keep);
+    }
     let result = if snapshot {
         budget.reserve_snapshot(slot)
     } else {
@@ -218,10 +234,12 @@ fn reserve<H: Host>(
                     .cloned()
                     .collect::<Vec<_>>();
                 s.candidates.retain(|_, c| c.version.slot != victim);
-                // Only the slots go: the vid binding stays, because the evicted candidate
-                // can be the one whose acceptance is reserving this slot.
                 for c in evicted {
                     s.gc.insert(c.base_record);
+                    // An invalid binding's record belongs to the legitimate vid.
+                    if !c.invalid_binding {
+                        forget_binding(s, &c.version.name, c.version.vid);
+                    }
                 }
                 s.slots.remove(&victim);
                 s.gc.insert(victim);
@@ -250,6 +268,74 @@ fn forget_binding(s: &mut State, name: &str, vid: Vid) {
         item.known.retain(|known| *known != vid);
     }
     s.gc.insert(record_slot(name, vid));
+}
+
+/// A rejected offer stays blocked while its sender keeps retrying.
+const REJECTED_OFFER_TTL: i64 = kc_wire::limits::INBOX_IDLE_DELETE_DAYS as i64 * 86400;
+fn reject_offer(s: &mut State, delivery: String, now: i64) {
+    s.rejected_until
+        .insert(delivery.clone(), now.saturating_add(REJECTED_OFFER_TTL));
+    s.rejected_offers.insert(delivery);
+}
+/// Whether an offer was rejected; a retry extends the block, so only silence expires it.
+fn offer_rejected(s: &mut State, delivery: &str, now: i64) -> bool {
+    if !s.rejected_offers.contains(delivery) {
+        return false;
+    }
+    s.rejected_until
+        .insert(delivery.into(), now.saturating_add(REJECTED_OFFER_TTL));
+    true
+}
+/// Expires silent rejected offers and drops bindings of offers that no longer have a
+/// candidate. State written before expiries existed gets a full TTL on first prune.
+fn prune(s: &mut State, now: i64) {
+    let rejected = std::mem::take(&mut s.rejected_offers);
+    let until = std::mem::take(&mut s.rejected_until);
+    for delivery in rejected {
+        let expiry = until
+            .get(&delivery)
+            .copied()
+            .unwrap_or_else(|| now.saturating_add(REJECTED_OFFER_TTL));
+        if expiry >= now {
+            s.rejected_until.insert(delivery.clone(), expiry);
+            s.rejected_offers.insert(delivery);
+        }
+    }
+    // An unfinished transaction may still own a candidate's binding.
+    if s.journal.is_some() {
+        return;
+    }
+    for entry in std::mem::take(&mut s.unbound) {
+        let Some((name, vid)) = entry
+            .rsplit_once(':')
+            .and_then(|(name, hex)| Some((name.to_owned(), parse_vid(hex)?)))
+        else {
+            continue;
+        };
+        s.unbound.insert(entry);
+        let candidate = s
+            .candidates
+            .values()
+            .any(|c| c.version.name == name && c.version.vid == vid);
+        // An accepted offer stays unbound until its sender's change arrives.
+        let accepted = s
+            .items
+            .get(&name)
+            .is_some_and(|i| i.head == vid || i.lineage.contains(&vid));
+        if !candidate && !accepted {
+            forget_binding(s, &name, vid);
+        }
+    }
+}
+fn parse_vid(hex: &str) -> Option<Vid> {
+    let mut vid = [0; 16];
+    if hex.len() != 32 || !hex.is_ascii() {
+        return None;
+    }
+    for (byte, pair) in vid.iter_mut().zip(hex.as_bytes().chunks(2)) {
+        *byte = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+    }
+    Some(Vid(vid))
 }
 
 fn release(s: &mut State, slot: &str) {
