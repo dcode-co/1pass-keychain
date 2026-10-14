@@ -2158,3 +2158,141 @@ async fn resolve_at_full_capacity_reports_storage_full_instead_of_resolved() {
     );
     assert_eq!(state(&b)["items"]["KEY"]["conflict"], true);
 }
+#[tokio::test]
+async fn legacy_accept_turned_conflict_reports_the_conflict_not_held() {
+    let (a, b, _) = devices().await;
+    enroll(&a, &b).await;
+    a.store()
+        .set(
+            "KEY",
+            b"fake-legacy-terminal",
+            kc_store::ItemKind::Text,
+            kc_store::Origin::Local,
+        )
+        .unwrap();
+    a.run(&["send", "KEY", "--to", "bravo"], Run::agent())
+        .await
+        .expect(0);
+    // A local edit lands while the overwrite waits for local confirmation.
+    let run = human(vec![Answer::Yes]).on_local_confirm(|store, _| {
+        store
+            .set(
+                "KEY",
+                b"fake-intervening-local",
+                kc_store::ItemKind::Text,
+                kc_store::Origin::Local,
+            )
+            .unwrap();
+    });
+    let out = b.run(&["inbox", "--on-conflict", "overwrite"], run).await;
+    assert!(
+        out.stderr
+            .contains("KEY changed on this device meanwhile and is now a conflict"),
+        "{}",
+        out.stderr
+    );
+    assert!(!out.stderr.contains("Sync item held"), "{}", out.stderr);
+    assert_eq!(b.value("KEY").unwrap(), b"fake-intervening-local");
+    assert_eq!(state(&b)["items"]["KEY"]["conflict"], true);
+}
+#[tokio::test]
+async fn evicted_held_candidate_keeps_its_binding() {
+    let (a, b, relay) = devices().await;
+    enroll(&a, &b).await;
+    let held = Vid::random();
+    post(
+        &a,
+        &b,
+        &relay,
+        change_message("KEY", held, head(&b), b"fake-held"),
+    )
+    .await;
+    b.run(&["inbox"], Run::agent()).await.expect(8);
+    assert!(holds_candidate(&state(&b), held));
+    // Fill the budget with checkpoints so the next snapshot can only evict the held slot.
+    let mut s = state(&b);
+    let used = s["slots"].as_object().unwrap().len();
+    for n in used..16 {
+        let slot = format!("sync/kg/test-{n}");
+        b.store().set_internal(&slot, b"fake-pinned").unwrap();
+        s["slots"][slot] = "Checkpoint".into();
+    }
+    save_state(&b, &s);
+    b.set("LOCAL", b"fake-local").await;
+    b.run(&["sync", "add", "LOCAL", "--peers", "alpha"], human(vec![]))
+        .await
+        .expect(8);
+    assert!(!holds_candidate(&state(&b), held));
+    assert!(
+        b.store()
+            .get_internal(&fp_slot("KEY", held))
+            .unwrap()
+            .is_some()
+    );
+}
+async fn review_with_candidate_changed_meanwhile(
+    change: impl FnOnce(&mut Value) + Send + 'static,
+) -> common::Output {
+    let (a, b, _) = devices().await;
+    enroll(&a, &b).await;
+    a.set("KEY", b"fake-incoming").await;
+    pump(&a, &b).await;
+    assert_eq!(state(&b)["candidates"].as_object().unwrap().len(), 1);
+    // Another process changes the candidate while review waits for local confirmation.
+    let run = human(vec![Answer::Select(0)]).on_local_confirm(move |_, dir| {
+        let path = dir.join("sync.json");
+        let mut s: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        change(&mut s);
+        std::fs::write(&path, serde_json::to_vec_pretty(&s).unwrap()).unwrap();
+    });
+    let out = b.run(&["sync", "review"], run).await;
+    assert!(!out.stderr.contains("Accepted KEY"), "{}", out.stderr);
+    assert_eq!(b.value("KEY").unwrap(), b"fake-initial-secret");
+    out
+}
+#[tokio::test]
+async fn review_reports_accepted_candidate_retired_meanwhile() {
+    let out = review_with_candidate_changed_meanwhile(|s| {
+        let slot = s["candidates"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
+        s["candidates"].as_object_mut().unwrap().remove(&slot);
+        s["slots"].as_object_mut().unwrap().remove(&slot);
+    })
+    .await;
+    assert!(
+        out.stderr
+            .contains("KEY from alpha was replaced by a newer change; run `kc sync review` again."),
+        "{}",
+        out.stderr
+    );
+}
+#[tokio::test]
+async fn review_reports_accepted_candidate_turned_conflict_meanwhile() {
+    let out = review_with_candidate_changed_meanwhile(|s| {
+        let slots = s["candidates"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for slot in slots {
+            s["candidates"][&slot]["category"] = "conflict".into();
+            s["slots"][&slot] = "ConflictCandidate".into();
+        }
+        s["items"]["KEY"]["conflict"] = true.into();
+    })
+    .await;
+    assert_eq!(
+        out.stderr
+            .matches("KEY is in conflict; settle it with `kc sync resolve KEY` first.")
+            .count(),
+        1,
+        "{}",
+        out.stderr
+    );
+}

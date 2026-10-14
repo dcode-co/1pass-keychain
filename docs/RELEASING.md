@@ -22,7 +22,11 @@ header has its own options and environment variables.
 5. Check what people get:
    - `brew install dcode-co/tap/kc` (or `brew upgrade kc`), then `kc --version`
    - `npm install 1pass-keychain@<version>` in an empty directory, then
-     `npx kc --version` and `KC_LANG=ko npx kc --help`
+     `./node_modules/.bin/kc --version` and
+     `KC_LANG=ko ./node_modules/.bin/kc --help`. Not `npx kc`: if the install
+     failed, npx fetches and runs the unrelated npm package named `kc`. Right
+     after publishing, the install can fail with `ETARGET` for a few minutes;
+     retry with `--prefer-online`.
 
 ## npm
 

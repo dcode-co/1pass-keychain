@@ -447,19 +447,39 @@ pub(crate) fn review<H: Host>(ctx: &mut Ctx<'_, H>) -> Result<i32> {
             }
         }
     }
+    // Accepting one candidate clears the item's other candidates.
+    let mut applied = std::collections::BTreeSet::new();
     for c in accepts {
         if s.frozen {
             break;
         }
-        if let Some(current) = s.candidates.get(&c.version.slot).cloned()
-            && current.category != CandidateKind::Conflict
-        {
-            match transaction::accept(ctx, &mut s, &current)? {
-                Accepted::Applied => done.push(tr!(
-                    "Accepted {name} from {peer}.",
+        // The candidate may have changed since it was listed: retired as superseded by a
+        // newer change from the same peer, or turned into a conflict.
+        let Some(current) = s.candidates.get(&c.version.slot).cloned() else {
+            if !applied.contains(&c.version.name) {
+                done.push(tr!(
+                    "{name} from {peer} was replaced by a newer change; run `kc sync review` again.",
                     name = c.version.name,
                     peer = label(ctx, &c.peer)?
-                )),
+                ));
+            }
+            continue;
+        };
+        if current.category == CandidateKind::Conflict {
+            done.push(tr!(
+                "{name} is in conflict; settle it with `kc sync resolve {name}` first.",
+                name = c.version.name
+            ));
+        } else {
+            match transaction::accept(ctx, &mut s, &current)? {
+                Accepted::Applied => {
+                    done.push(tr!(
+                        "Accepted {name} from {peer}.",
+                        name = c.version.name,
+                        peer = label(ctx, &c.peer)?
+                    ));
+                    applied.insert(c.version.name.clone());
+                }
                 Accepted::Conflict => done.push(tr!(
                     "{name} changed on this device meanwhile and is now a conflict; settle it with `kc sync resolve {name}`.",
                     name = c.version.name

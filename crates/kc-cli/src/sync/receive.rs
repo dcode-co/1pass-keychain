@@ -775,9 +775,23 @@ pub(crate) fn legacy<H: Host>(
             return Err(error);
         }
         let c = s.candidates[&slot].clone();
-        if transaction::accept(ctx, &mut s, &c)? == transaction::Accepted::Applied {
-            return Ok(Some(kc_proto::ItemStatus::Stored));
+        let line = match transaction::accept(ctx, &mut s, &c)? {
+            transaction::Accepted::Applied => return Ok(Some(kc_proto::ItemStatus::Stored)),
+            transaction::Accepted::Conflict => Some(tr!(
+                "{name} changed on this device meanwhile and is now a conflict; settle it with `kc sync resolve {name}`.",
+                name = name
+            )),
+            transaction::Accepted::Full => Some(tr!(
+                "Sync storage is full; review pending items before retrying."
+            )),
+            // accept() already said which conflict must be settled first.
+            transaction::Accepted::Unsettled => None,
+        };
+        s.cleanup(ctx)?;
+        if let Some(line) = line {
+            crate::commands::say!(ctx, "{line}");
         }
+        return Ok(Some(kc_proto::ItemStatus::SkippedConflict));
     }
     s.cleanup(ctx)?;
     crate::commands::say!(ctx, "{}", tr!("Sync item held; run `kc sync review`."));

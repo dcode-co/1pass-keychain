@@ -236,8 +236,10 @@ fn reserve_keeping<H: Host>(
                 s.candidates.retain(|_, c| c.version.slot != victim);
                 for c in evicted {
                     s.gc.insert(c.base_record);
-                    // An invalid binding's record belongs to the legitimate vid.
-                    if !c.invalid_binding {
+                    // Only a proposal's binding goes with it: held and conflict bindings stay
+                    // for the immutable-vid check, as in retire_superseded. An invalid
+                    // binding's record belongs to the legitimate vid.
+                    if c.category == CandidateKind::Proposal && !c.invalid_binding {
                         forget_binding(s, &c.version.name, c.version.vid);
                     }
                 }

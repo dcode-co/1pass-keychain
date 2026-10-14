@@ -10,7 +10,7 @@
 use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
@@ -191,7 +191,12 @@ pub struct Run {
     pub local_auth: VecDeque<LocalAuthOutcome>,
     pub env: Vec<(String, String)>,
     pub code_tx: Option<oneshot::Sender<String>>,
+    /// Runs once at the first local confirmation, standing in for another process that
+    /// changes the device meanwhile (gets the device's store and config dir).
+    pub on_local_confirm: Option<LocalConfirmHook>,
 }
+
+pub type LocalConfirmHook = Box<dyn FnOnce(Store, &Path) + Send>;
 
 impl Run {
     /// An agent: piped stdin and `CLAUDECODE=1`.
@@ -204,6 +209,7 @@ impl Run {
             local_auth: VecDeque::new(),
             env: vec![("CLAUDECODE".into(), "1".into())],
             code_tx: None,
+            on_local_confirm: None,
         }
     }
 
@@ -217,6 +223,7 @@ impl Run {
             local_auth: VecDeque::new(),
             env: Vec::new(),
             code_tx: None,
+            on_local_confirm: None,
         }
     }
 
@@ -232,6 +239,11 @@ impl Run {
 
     pub fn code_to(mut self, tx: oneshot::Sender<String>) -> Run {
         self.code_tx = Some(tx);
+        self
+    }
+
+    pub fn on_local_confirm(mut self, hook: impl FnOnce(Store, &Path) + Send + 'static) -> Run {
+        self.on_local_confirm = Some(Box::new(hook));
         self
     }
 }
@@ -272,6 +284,7 @@ struct TestHost<'d, N: Net> {
     stdout_terminal: bool,
     env: Vec<(String, String)>,
     local_auth: VecDeque<LocalAuthOutcome>,
+    on_local_confirm: Option<LocalConfirmHook>,
 }
 
 impl<N: Net> Host for TestHost<'_, N> {
@@ -286,6 +299,9 @@ impl<N: Net> Host for TestHost<'_, N> {
         self.console
             .prompts
             .push(format!("local confirmation: {reason}"));
+        if let Some(hook) = self.on_local_confirm.take() {
+            hook(self.device.store(), self.device.dir.path());
+        }
         self.local_auth.pop_front().unwrap_or_else(|| {
             LocalAuthOutcome::Unavailable("no scripted local confirmation".into())
         })
@@ -425,6 +441,7 @@ impl<N: Net> Device<N> {
             stdout_terminal: run.stdout_terminal,
             env,
             local_auth: run.local_auth,
+            on_local_confirm: run.on_local_confirm,
         };
         let argv = std::iter::once("kc")
             .chain(args.iter().copied())
