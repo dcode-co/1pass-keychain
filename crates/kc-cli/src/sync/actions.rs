@@ -90,6 +90,8 @@ fn offer<H: Host>(ctx: &mut Ctx<'_, H>, s: &mut State, name: &str, peers: &[Stri
 }
 pub(crate) fn remove<H: Host>(ctx: &Ctx<'_, H>, s: &mut State, name: &str) -> Result<()> {
     let (registration, mut peers) = s.generations.rm(name).map_err(|_| state_error())?;
+    // The known vids' sync/fp records stay: after `sync add` of the same name, a peer could
+    // otherwise reuse an old vid with another value under the new generation unquarantined.
     if let Some(item) = s.items.remove(name) {
         peers.extend(item.scope.into_iter().map(PeerId));
     }
