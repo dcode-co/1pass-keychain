@@ -1879,7 +1879,13 @@ async fn full_capacity_scan_and_preserve_mine_leave_inbox_review_and_resolve_ope
         .run(&["sync", "resolve", "KEY", "--keep", "mine"], human(vec![]))
         .await;
     out.expect(8);
-    assert!(!out.stderr.contains("Sync storage is full"));
+    // Resolve says why nothing was resolved instead of claiming success.
+    assert!(
+        out.stderr.contains("Sync storage is full"),
+        "{}",
+        out.stderr
+    );
+    assert!(!out.stderr.contains("Resolved KEY"), "{}", out.stderr);
     assert_eq!(b.value("KEY").unwrap(), b"fake-out-of-band");
     // After capacity is freed, the same review/resolve path can recover normally.
     let mut s = state(&b);
@@ -2055,4 +2061,100 @@ async fn retired_superseded_vid_is_not_resurrected_by_duplicate_delivery() {
     let candidates = s["candidates"].as_object().unwrap();
     assert_eq!(candidates.len(), 1, "{candidates:?}");
     assert!(!candidates.contains_key(&key));
+}
+#[tokio::test]
+async fn reordered_superseded_held_change_stays_retired_after_successor_is_rejected() {
+    let (a, b, relay) = devices().await;
+    enroll(&a, &b).await;
+    let base = head(&b);
+    let (x, z) = (Vid::random(), Vid::random());
+    let change = |vid: Vid, parents: Vec<Vid>, value: &[u8]| SyncMsg::Changes {
+        changes: vec![Change {
+            name: ItemName::new("KEY").unwrap(),
+            generation: 1,
+            new_vid: vid,
+            lineage: parents.iter().copied().chain([vid]).collect(),
+            parents,
+            op: Op::Put {
+                kind: kc_proto::sync::ItemKind::Text,
+                value: SecretBytes::from_slice(value),
+            },
+            approval_ref: None,
+        }],
+    };
+    let superseded = change(x, vec![base], b"fake-reordered-x");
+    // The successor Z, naming X as a parent, arrives first.
+    post(
+        &a,
+        &b,
+        &relay,
+        change(z, vec![base, x], b"fake-reordered-z"),
+    )
+    .await;
+    b.run(&["inbox"], Run::agent()).await.expect(8);
+    post(&a, &b, &relay, superseded.clone()).await;
+    b.run(&["inbox"], Run::agent()).await.expect(8);
+    let s = state(&b);
+    let candidates = s["candidates"].as_object().unwrap();
+    assert_eq!(candidates.len(), 1, "{candidates:?}");
+    assert!(candidates.keys().all(|k| k.ends_with(&hex(&z.0))));
+    b.run(&["sync", "review"], human(vec![Answer::Select(1)]))
+        .await
+        .expect(0);
+    post(&a, &b, &relay, superseded).await;
+    b.run(&["inbox"], Run::agent()).await.expect(0);
+    assert!(state(&b)["candidates"].as_object().unwrap().is_empty());
+    assert_eq!(b.value("KEY").unwrap(), b"fake-initial-secret");
+}
+#[tokio::test]
+async fn review_accept_after_local_edit_reports_conflict_instead_of_accepted() {
+    let (a, b, _) = devices().await;
+    enroll(&a, &b).await;
+    a.set("KEY", b"fake-incoming").await;
+    pump(&a, &b).await;
+    b.set("KEY", b"fake-intervening-local").await;
+    let out = b
+        .run(&["sync", "review"], human(vec![Answer::Select(0)]))
+        .await;
+    out.expect(8);
+    assert!(!out.stderr.contains("Accepted KEY"), "{}", out.stderr);
+    assert!(
+        out.stderr
+            .contains("KEY changed on this device meanwhile and is now a conflict"),
+        "{}",
+        out.stderr
+    );
+    assert_eq!(b.value("KEY").unwrap(), b"fake-intervening-local");
+}
+#[tokio::test]
+async fn resolve_at_full_capacity_reports_storage_full_instead_of_resolved() {
+    let (a, b, _) = devices().await;
+    enroll(&a, &b).await;
+    let mut s = state(&b);
+    for n in 0..16 {
+        let slot = format!("sync/kg/test-{n}");
+        b.store().set_internal(&slot, b"fake-pinned").unwrap();
+        s["slots"][slot] = "Checkpoint".into();
+    }
+    save_state(&b, &s);
+    b.store()
+        .set(
+            "KEY",
+            b"fake-out-of-band",
+            kc_store::ItemKind::Text,
+            kc_store::Origin::Local,
+        )
+        .unwrap();
+    let out = b
+        .run(&["sync", "resolve", "KEY", "--keep", "mine"], human(vec![]))
+        .await;
+    out.expect(8);
+    assert!(!out.stderr.contains("Resolved KEY"), "{}", out.stderr);
+    assert!(
+        out.stderr
+            .contains("Sync storage is full; review pending items before retrying."),
+        "{}",
+        out.stderr
+    );
+    assert_eq!(state(&b)["items"]["KEY"]["conflict"], true);
 }

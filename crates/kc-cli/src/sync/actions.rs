@@ -1,7 +1,7 @@
 use super::*;
 use crate::cli::{SyncCommand, SyncPeerCommand};
 use state::{CandidateKind, Control, Item, Offer, Peer};
-use transaction::{blob, put_blob, queue};
+use transaction::{Accepted, blob, put_blob, queue};
 
 pub(crate) fn label<H: Host>(ctx: &Ctx<'_, H>, peer: &str) -> Result<String> {
     if peer == "mine" {
@@ -454,12 +454,22 @@ pub(crate) fn review<H: Host>(ctx: &mut Ctx<'_, H>) -> Result<i32> {
         if let Some(current) = s.candidates.get(&c.version.slot).cloned()
             && current.category != CandidateKind::Conflict
         {
-            transaction::accept(ctx, &mut s, &current)?;
-            done.push(tr!(
-                "Accepted {name} from {peer}.",
-                name = c.version.name,
-                peer = label(ctx, &c.peer)?
-            ));
+            match transaction::accept(ctx, &mut s, &current)? {
+                Accepted::Applied => done.push(tr!(
+                    "Accepted {name} from {peer}.",
+                    name = c.version.name,
+                    peer = label(ctx, &c.peer)?
+                )),
+                Accepted::Conflict => done.push(tr!(
+                    "{name} changed on this device meanwhile and is now a conflict; settle it with `kc sync resolve {name}`.",
+                    name = c.version.name
+                )),
+                // accept() already said which conflict must be settled first.
+                Accepted::Unsettled => {}
+                Accepted::Full => done.push(tr!(
+                    "Sync storage is full; review pending items before retrying."
+                )),
+            }
         }
     }
     s.cleanup(ctx)?;
@@ -646,7 +656,11 @@ pub(crate) fn command<H: Host>(ctx: &mut Ctx<'_, H>, mut command: SyncCommand) -
                 return Err(state_error());
             }
             let value = blob(ctx, &checkpoint_slot(&name))?;
-            transaction::resolve_value(ctx, &mut s, &name, value.value.expose(), value.kind)?;
+            if !transaction::resolve_value(ctx, &mut s, &name, value.value.expose(), value.kind)? {
+                done.push(tr!(
+                    "Sync storage is full; review pending items before retrying."
+                ));
+            }
         }
         SyncCommand::Resolve { name, keep } => {
             scan(ctx, &mut s)?;
@@ -720,12 +734,15 @@ pub(crate) fn command<H: Host>(ctx: &mut Ctx<'_, H>, mut command: SyncCommand) -
                 let value = blob(ctx, &c.version.slot)?;
                 (Zeroizing::new(value.value.expose().to_vec()), value.kind)
             };
-            transaction::resolve_value(ctx, &mut s, &name, &value, kind)?;
-            done.push(tr!(
-                "Resolved {name}, keeping {choice}; the other devices review it with `kc sync review`.",
-                name = name,
-                choice = choice
-            ));
+            done.push(if transaction::resolve_value(ctx, &mut s, &name, &value, kind)? {
+                tr!(
+                    "Resolved {name}, keeping {choice}; the other devices review it with `kc sync review`.",
+                    name = name,
+                    choice = choice
+                )
+            } else {
+                tr!("Sync storage is full; review pending items before retrying.")
+            });
         }
         SyncCommand::Peer { command } => match command {
             SyncPeerCommand::List => {

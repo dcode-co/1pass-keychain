@@ -500,6 +500,7 @@
 "Ignored a sync offer from disabled or blocked peer {peer}." = "已忽略已停用或遭封鎖的裝置{peer}的同步提議。"
 "Sync item held; run `kc sync review`." = "同步項目已保留；請執行 `kc sync review`。"
 "{name} is in conflict; settle it with `kc sync resolve {name}` first." = "{name} 有衝突，請先用 `kc sync resolve {name}` 解決。"
+"{name} changed on this device meanwhile and is now a conflict; settle it with `kc sync resolve {name}`." = "{name} 在此期間已在本裝置上變更，現已成為衝突，請用 `kc sync resolve {name}` 解決。"
 "removed from sync" = "已移出同步"
 "hasn't answered the sync handshake yet" = "尚未回應同步交握"
 "paused after too many changes" = "因變更過多已暫停"

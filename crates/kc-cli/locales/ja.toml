@@ -500,6 +500,7 @@
 "Ignored a sync offer from disabled or blocked peer {peer}." = "無効またはブロックされたデバイス{peer}からの同期提案を無視しました。"
 "Sync item held; run `kc sync review`." = "同期項目を保留しました。`kc sync review`を実行してください。"
 "{name} is in conflict; settle it with `kc sync resolve {name}` first." = "{name} は競合中です。先に `kc sync resolve {name}` で解決してください。"
+"{name} changed on this device meanwhile and is now a conflict; settle it with `kc sync resolve {name}`." = "その間にこのデバイスで {name} が変更されたため、競合になりました。`kc sync resolve {name}` で解決してください。"
 "removed from sync" = "同期から外した"
 "hasn't answered the sync handshake yet" = "同期ハンドシェイクの応答待ち"
 "paused after too many changes" = "変更が多すぎるため一時停止中"

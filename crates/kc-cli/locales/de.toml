@@ -500,6 +500,7 @@
 "Ignored a sync offer from disabled or blocked peer {peer}." = "Synchronisierungsangebot vom deaktivierten oder blockierten Gerät {peer} ignoriert."
 "Sync item held; run `kc sync review`." = "Synchronisierungselement zurückgehalten; `kc sync review` ausführen."
 "{name} is in conflict; settle it with `kc sync resolve {name}` first." = "{name} steht im Konflikt; zuerst mit `kc sync resolve {name}` auflösen."
+"{name} changed on this device meanwhile and is now a conflict; settle it with `kc sync resolve {name}`." = "{name} wurde inzwischen auf diesem Gerät geändert und steht jetzt im Konflikt; mit `kc sync resolve {name}` auflösen."
 "removed from sync" = "aus der Synchronisierung entfernt"
 "hasn't answered the sync handshake yet" = "hat auf den Sync-Handshake noch nicht geantwortet"
 "paused after too many changes" = "nach zu vielen Änderungen pausiert"

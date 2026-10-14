@@ -363,19 +363,20 @@ pub(super) fn publish_current<H: Host>(
     finish_local(ctx, s, &r, &v, false)?;
     clear_intent(ctx, s)
 }
+/// Returns false when sync storage is full and nothing was resolved.
 pub(super) fn resolve_value<H: Host>(
     ctx: &mut Ctx<'_, H>,
     s: &mut State,
     name: &str,
     value: &[u8],
     kind: ItemKind,
-) -> Result<()> {
+) -> Result<bool> {
     let item = &s.items[name];
     if !item.conflict
         && !s.candidates.values().any(|c| c.version.name == name)
         && current(ctx, name)?.is_some_and(|v| v.1 == kind && v.0.as_slice() == value)
     {
-        return Ok(());
+        return Ok(true);
     }
     let mut parents = vec![item.head];
     parents.extend(
@@ -394,7 +395,8 @@ pub(super) fn resolve_value<H: Host>(
                 ctx,
                 tr!("Sync storage is full; review pending items before retrying."),
             )?;
-            return s.save(&ctx.state);
+            s.save(&ctx.state)?;
+            return Ok(false);
         }
         Err(error) => return Err(error),
     };
@@ -402,9 +404,25 @@ pub(super) fn resolve_value<H: Host>(
     interrupted(ctx)?;
     put_blob(ctx, &v.slot, kind, value)?;
     finish_local(ctx, s, &r, &v, true)?;
-    clear_intent(ctx, s)
+    clear_intent(ctx, s)?;
+    Ok(true)
 }
-pub(super) fn accept<H: Host>(ctx: &mut Ctx<'_, H>, s: &mut State, c: &Candidate) -> Result<bool> {
+/// What `accept` did with a candidate, so callers report only what happened.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Accepted {
+    Applied,
+    /// The value or head changed here since receipt; the candidate is now a conflict.
+    Conflict,
+    /// The item is in conflict and this candidate does not settle it (already reported).
+    Unsettled,
+    /// No room for the checkpoint; sync storage is full.
+    Full,
+}
+pub(super) fn accept<H: Host>(
+    ctx: &mut Ctx<'_, H>,
+    s: &mut State,
+    c: &Candidate,
+) -> Result<Accepted> {
     let name = &c.version.name;
     let now = current(ctx, name)?;
     let actual = now.as_ref().map_or(Fp([0; 32]), |v| v.2);
@@ -424,7 +442,7 @@ pub(super) fn accept<H: Host>(ctx: &mut Ctx<'_, H>, s: &mut State, c: &Candidate
             item.conflict = true;
         }
         s.save(&ctx.state)?;
-        return Ok(false);
+        return Ok(Accepted::Conflict);
     }
     // While the item is in conflict, only `kc sync resolve` may settle it: accepting a
     // proposal or held change here would drop the other candidates (§2.4).
@@ -452,11 +470,11 @@ pub(super) fn accept<H: Host>(ctx: &mut Ctx<'_, H>, s: &mut State, c: &Candidate
                 name = name
             )
         );
-        return Ok(false);
+        return Ok(Accepted::Unsettled);
     }
     if c.retire {
         super::actions::remove(ctx, s, name)?;
-        return Ok(true);
+        return Ok(Accepted::Applied);
     }
     let value = blob(ctx, &c.version.slot)?;
     let fp = fingerprint(ctx, name, value.kind, value.value.expose())?;
@@ -475,7 +493,7 @@ pub(super) fn accept<H: Host>(ctx: &mut Ctx<'_, H>, s: &mut State, c: &Candidate
             Some(&c.version.slot),
         )?
     {
-        return Ok(false);
+        return Ok(Accepted::Full);
     }
     let lineage =
         kc_sync::Lineage::new(c.version.lineage.iter().copied().chain(head).map(map::vid))
@@ -521,7 +539,7 @@ pub(super) fn accept<H: Host>(ctx: &mut Ctx<'_, H>, s: &mut State, c: &Candidate
     interrupted(ctx)?;
     finish_remote(ctx, s, &r, c)?;
     clear_intent(ctx, s)?;
-    Ok(true)
+    Ok(Accepted::Applied)
 }
 fn finish_remote<H: Host>(
     ctx: &Ctx<'_, H>,
