@@ -183,6 +183,11 @@ $ kc sync status            # 값 대신 상태와 이 기기의 값 지문 표�
   `-darwin-x64`, `-linux-arm64`, `-linux-x64`, 그리고 Windows 는
   `@1pass/keychain-win32-x64` 입니다. `--omit=optional`(또는 `--no-optional`)
   로 설치하면 빠지니 그 옵션 없이 다시 설치하세요.
+- **SSH 로 접속한 macOS 에서 키체인이 잠겨 있거나 쓸 수 없을 때.** macOS 는 SSH
+  로그인에서 로그인 키체인을 잠가 두기 때문에 키체인 확인 창이 뜰 수 없습니다. 맥에서
+  직접 터미널을 열어 kc 를 실행하거나, SSH 세션에서 먼저
+  `security unlock-keychain ~/Library/Keychains/login.keychain-db` 를 실행하세요(맥 로그인
+  암호를 묻습니다).
 - **Windows 에서 `no Credential Manager logon session` 이 나올 때.** SSH 키로
   로그인한 세션에는 자격 증명 관리자가 없습니다. 데스크톱 세션에서 실행하거나
   비밀번호로 SSH 접속하세요.

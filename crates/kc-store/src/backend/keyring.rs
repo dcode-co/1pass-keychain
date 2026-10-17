@@ -292,6 +292,13 @@ mod sys {
     const DENIED_HINT: &str = "Run kc again and choose \"Always Allow\" at the keychain prompt";
     const UNAVAILABLE_HINT: &str = "The login keychain isn't available in this session; log in to \
         the Mac's desktop once, or run `security unlock-keychain`";
+    /// macOS keeps the login keychain locked for SSH logins, so a keychain prompt can never
+    /// appear there: "choose Always Allow" would be wrong advice.
+    const SSH_HINT: &str = "This is an SSH login, and macOS keeps the login keychain locked for \
+        SSH logins, so no keychain prompt can appear here. Run kc in a Terminal on the Mac \
+        itself, or unlock the keychain for this session first with \
+        `security unlock-keychain ~/Library/Keychains/login.keychain-db` (it asks for the login \
+        password)";
 
     /// Disables keychain prompts for one call when the store is non-interactive; dropping it
     /// turns them back on.
@@ -411,8 +418,15 @@ mod sys {
                 let code = inner
                     .downcast_ref::<security_framework::base::Error>()
                     .map(|err| err.code());
-                let detail = inner.to_string();
+                let detail = super::super::clean_detail(&inner.to_string());
+                let ssh = super::super::in_ssh_session();
                 match code {
+                    // errSecInteractionNotAllowed or errSecAuthFailed in an SSH login: the
+                    // keychain is locked for this session, not refused by the user.
+                    Some(-25308 | -25293) if ssh => StoreError::Locked {
+                        what: "macOS login keychain in an SSH login".into(),
+                        hint: SSH_HINT.into(),
+                    },
                     // errSecInteractionNotAllowed
                     Some(-25308) => StoreError::InteractionRequired {
                         op,
@@ -427,7 +441,7 @@ mod sys {
                     // errSecNotAvailable, errSecNoSuchKeychain, errSecInvalidKeychain
                     Some(-25291 | -25294 | -25295) => StoreError::Unavailable {
                         reason: detail,
-                        hint: UNAVAILABLE_HINT.into(),
+                        hint: if ssh { SSH_HINT } else { UNAVAILABLE_HINT }.into(),
                     },
                     _ => StoreError::Backend { op, detail },
                 }

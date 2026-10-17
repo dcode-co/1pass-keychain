@@ -180,6 +180,11 @@ $ kc sync status            # 値ではなく状態とこのデバイスの値�
   `1pass-keychain-darwin-arm64`、`-darwin-x64`、`-linux-arm64`、`-linux-x64`、
   Windows は `@1pass/keychain-win32-x64`。`--omit=optional` (または `--no-optional`)
   でインストールすると含まれないので、そのフラグなしで再インストールしてください。
+- **SSH 経由の macOS: キーチェーンがロックされている、または使えない。** macOS は SSH
+  ログインではログインキーチェーンをロックしたままにするため、キーチェーンの確認は表示されません。
+  Mac 本体のターミナルで kc を実行するか、SSH セッションで先に
+  `security unlock-keychain ~/Library/Keychains/login.keychain-db` を実行してください
+  (Mac のログインパスワードを求められます)。
 - **Windows: `no Credential Manager logon session`。** 鍵でログインした SSH
   セッションには資格情報マネージャーがありません。デスクトップセッションから
   kc を実行するか、パスワードで SSH 接続してください。

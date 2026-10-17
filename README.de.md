@@ -183,6 +183,12 @@ blockiert ist. Siehe die [Sicherheitsgrenzen](docs/SECURITY.md).
   `-darwin-x64`, `-linux-arm64`, `-linux-x64` und `@1pass/keychain-win32-x64`
   für Windows. Bei einer Installation mit `--omit=optional` (oder `--no-optional`)
   fehlt es; installiere ohne diese Option neu.
+- **macOS über SSH: Der Schlüsselbund ist gesperrt oder nicht verfügbar.** macOS hält
+  den Anmeldeschlüsselbund in einer SSH-Sitzung gesperrt, daher kann dort keine
+  Schlüsselbund-Abfrage erscheinen. Führe kc in einem Terminal direkt auf dem Mac aus
+  oder führe in der SSH-Sitzung zuerst
+  `security unlock-keychain ~/Library/Keychains/login.keychain-db` aus (es fragt nach
+  dem Anmeldepasswort des Mac).
 - **Windows: `no Credential Manager logon session`.** In einer SSH-Sitzung, die sich
   mit einem Schlüssel angemeldet hat, gibt es keine Anmeldeinformationsverwaltung. Führe kc
   in einer Desktop-Sitzung aus oder verbinde dich per SSH mit einem Passwort.

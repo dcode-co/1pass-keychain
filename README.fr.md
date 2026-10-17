@@ -182,6 +182,11 @@ signale du travail en attente ou bloqué. Voir les [limites de sécurité](docs/
   `-darwin-x64`, `-linux-arm64`, `-linux-x64`, et `@1pass/keychain-win32-x64`
   pour Windows. Une installation avec `--omit=optional` (ou `--no-optional`)
   l'omet ; réinstallez sans cette option.
+- **macOS via SSH : le trousseau est verrouillé ou n'est pas disponible.** macOS garde
+  le trousseau de session verrouillé dans une session SSH, donc aucune demande du
+  trousseau ne peut s'y afficher. Lancez kc dans un terminal sur le Mac lui-même, ou
+  lancez d'abord `security unlock-keychain ~/Library/Keychains/login.keychain-db`
+  dans la session SSH (il demande le mot de passe de session du Mac).
 - **Windows : `no Credential Manager logon session`.** Le Gestionnaire d'identification
   n'existe pas dans une session SSH ouverte avec une clé. Lancez kc depuis une
   session de bureau, ou connectez-vous en SSH avec un mot de passe.

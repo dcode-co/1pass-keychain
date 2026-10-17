@@ -180,6 +180,11 @@ work remains. See [the security limits](docs/SECURITY.md).
   `-darwin-x64`, `-linux-arm64`, `-linux-x64`, and `@1pass/keychain-win32-x64`
   for Windows. Installing with `--omit=optional` (or `--no-optional`) leaves
   it out; reinstall without that flag.
+- **macOS over SSH: the keychain is locked or unavailable.** macOS keeps the
+  login keychain locked in an SSH login, so no keychain prompt can appear
+  there. Run kc in a Terminal on the Mac itself, or first run
+  `security unlock-keychain ~/Library/Keychains/login.keychain-db` in the SSH
+  session (it asks for the Mac's login password).
 - **Windows: `no Credential Manager logon session`.** Credential Manager
   doesn't exist in an SSH session that logged in with a key. Run kc from a
   desktop session, or connect over SSH with a password.

@@ -181,6 +181,11 @@ trabajo pendiente o bloqueado. Consulta los [límites de seguridad](docs/SECURIT
   `-darwin-x64`, `-linux-arm64`, `-linux-x64` y `@1pass/keychain-win32-x64`
   para Windows. Instalar con `--omit=optional` (o `--no-optional`) lo omite;
   reinstala sin esa opción.
+- **macOS por SSH: el llavero está bloqueado o no está disponible.** macOS mantiene
+  bloqueado el llavero de inicio de sesión en una sesión SSH, así que ahí no puede
+  aparecer ningún aviso del llavero. Ejecuta kc en una terminal del propio Mac, o
+  ejecuta primero `security unlock-keychain ~/Library/Keychains/login.keychain-db`
+  en la sesión SSH (pide la contraseña de inicio de sesión del Mac).
 - **Windows: `no Credential Manager logon session`.** El Administrador de credenciales
   no existe en una sesión SSH iniciada con una clave. Ejecuta kc desde una
   sesión de escritorio o conéctate por SSH con una contraseña.

@@ -97,6 +97,30 @@ pub(crate) fn connect(_cfg: &StoreConfig) -> Result<Arc<dyn Backend>> {
     })
 }
 
+/// Whether this process runs in an SSH login (`SSH_CONNECTION`, `SSH_CLIENT` or `SSH_TTY` is
+/// set). macOS keeps the login keychain locked for SSH logins, so no keychain prompt can appear
+/// there and the usual "choose Always Allow" advice doesn't apply.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn in_ssh_session() -> bool {
+    in_ssh_session_with(|key| std::env::var_os(key))
+}
+
+fn in_ssh_session_with(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> bool {
+    ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"]
+        .into_iter()
+        .any(|key| var(key).is_some_and(|value| !value.is_empty()))
+}
+
+/// OS error texts often end with a period; kc's messages add their own separator.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn clean_detail(detail: &str) -> String {
+    detail
+        .trim_end()
+        .trim_end_matches('.')
+        .trim_end()
+        .to_owned()
+}
+
 pub(crate) fn not_found(service: &str, account: Option<&str>) -> StoreError {
     match account {
         Some(account) => StoreError::NotFound(format!(
@@ -311,6 +335,45 @@ mod tests {
 
     // These tests share the process-wide KEYCHAIN_CALLS with each other, so each one keeps
     // its workers short.
+
+    #[test]
+    fn ssh_sessions_are_recognised_from_any_ssh_variable() {
+        use std::ffi::OsString;
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |key: &str| {
+                pairs
+                    .iter()
+                    .find(|(k, _)| *k == key)
+                    .map(|(_, v)| OsString::from(*v))
+            }
+        };
+        assert!(!in_ssh_session_with(env(&[])));
+        assert!(!in_ssh_session_with(env(&[("SSH_CONNECTION", "")])));
+        assert!(!in_ssh_session_with(env(&[(
+            "SSH_AUTH_SOCK",
+            "/tmp/agent"
+        )])));
+        assert!(in_ssh_session_with(env(&[(
+            "SSH_CONNECTION",
+            "100.64.0.2 51000 100.64.0.1 22"
+        )])));
+        assert!(in_ssh_session_with(env(&[(
+            "SSH_CLIENT",
+            "100.64.0.2 51000 22"
+        )])));
+        assert!(in_ssh_session_with(env(&[("SSH_TTY", "/dev/ttys003")])));
+    }
+
+    #[test]
+    fn details_lose_their_trailing_period() {
+        assert_eq!(
+            clean_detail("The user name or passphrase you entered is not correct."),
+            "The user name or passphrase you entered is not correct"
+        );
+        assert_eq!(clean_detail("no period"), "no period");
+        assert_eq!(clean_detail("two.. "), "two");
+        assert_eq!(clean_detail(""), "");
+    }
 
     #[test]
     fn bounded_returns_the_result() {

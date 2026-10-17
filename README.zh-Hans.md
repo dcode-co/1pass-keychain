@@ -175,6 +175,9 @@ Touch ID（或系统密码）、Windows Hello 或 polkit 在本机确认。加�
   各平台包中：`1pass-keychain-darwin-arm64`、`-darwin-x64`、`-linux-arm64`、
   `-linux-x64`，Windows 为 `@1pass/keychain-win32-x64`。用 `--omit=optional`
   （或 `--no-optional`）安装会漏掉它；请去掉该选项重新安装。
+- **通过 SSH 使用 macOS：钥匙串已锁定或不可用。** macOS 在 SSH 登录中会让登录钥匙串保持锁定，
+  因此无法显示钥匙串提示。请在 Mac 本机的终端中运行 kc，或先在 SSH 会话中运行
+  `security unlock-keychain ~/Library/Keychains/login.keychain-db`（它会要求输入 Mac 的登录密码）。
 - **Windows：`no Credential Manager logon session`。** 用密钥登录的 SSH 会话中
   没有凭据管理器。请在桌面会话中运行 kc，或用密码通过 SSH 连接。
 - **Linux：钥匙串不可用。** 启动 Secret Service（例如 gnome-keyring）并解锁；

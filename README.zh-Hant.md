@@ -175,6 +175,9 @@ Touch ID（或系統密碼）、Windows Hello 或 polkit 在本機確認。加�
   各平台套件中：`1pass-keychain-darwin-arm64`、`-darwin-x64`、`-linux-arm64`、
   `-linux-x64`，Windows 為 `@1pass/keychain-win32-x64`。用 `--omit=optional`
   （或 `--no-optional`）安裝會漏掉它；請拿掉該選項重新安裝。
+- **透過 SSH 使用 macOS：鑰匙圈已鎖定或無法使用。** macOS 在 SSH 登入中會讓登入鑰匙圈保持鎖定，
+  因此無法顯示鑰匙圈提示。請在 Mac 本機的終端機中執行 kc，或先在 SSH 工作階段中執行
+  `security unlock-keychain ~/Library/Keychains/login.keychain-db`（它會要求輸入 Mac 的登入密碼）。
 - **Windows：`no Credential Manager logon session`。** 以金鑰登入的 SSH 工作階段中
   沒有認證管理員。請在桌面工作階段中執行 kc，或以密碼透過 SSH 連線。
 - **Linux：鑰匙圈無法使用。** 啟動 Secret Service（例如 gnome-keyring）並解鎖；
