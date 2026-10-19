@@ -179,7 +179,9 @@ Touch ID（或系統密碼）、Windows Hello 或 polkit 在本機確認。加�
   因此無法顯示鑰匙圈提示。請在 Mac 本機的終端機中執行 kc，或先在 SSH 工作階段中執行
   `security unlock-keychain ~/Library/Keychains/login.keychain-db`（它會要求輸入 Mac 的登入密碼）。
 - **Windows：`no Credential Manager logon session`。** 以金鑰登入的 SSH 工作階段中
-  沒有認證管理員。請在桌面工作階段中執行 kc，或以密碼透過 SSH 連線。
+  沒有認證管理員。請在桌面工作階段中執行 kc，或在以 Windows 密碼啟動的處理程序中執行
+  （例如 PowerShell 的 `Start-Process -Credential`），這樣的處理程序有完整的登入工作階段。
+  改以密碼登入 SSH 並不可靠：對於 Microsoft 帳戶，即使密碼正確，Windows 也可能拒絕。
 - **Linux：鑰匙圈無法使用。** 啟動 Secret Service（例如 gnome-keyring）並解鎖；
   `kc doctor` 會指出缺少哪個部分。
 - **訊息語言不對。** 設定 `KC_LANG`（見下方「語言」）。當 stdout 與 stderr

@@ -189,7 +189,10 @@ signale du travail en attente ou bloqué. Voir les [limites de sécurité](docs/
   dans la session SSH (il demande le mot de passe de session du Mac).
 - **Windows : `no Credential Manager logon session`.** Le Gestionnaire d'identification
   n'existe pas dans une session SSH ouverte avec une clé. Lancez kc depuis une
-  session de bureau, ou connectez-vous en SSH avec un mot de passe.
+  session de bureau, ou depuis un processus démarré avec votre mot de passe Windows
+  (par exemple `Start-Process -Credential` dans PowerShell), qui obtient une session
+  de connexion complète. Se connecter en SSH avec un mot de passe n'est pas une solution
+  fiable : Windows peut le refuser pour un compte Microsoft même si le mot de passe est bon.
 - **Linux : le trousseau n'est pas disponible.** Démarrez un Secret Service (par exemple
   gnome-keyring) et déverrouillez-le ; `kc doctor` indique ce qui manque.
 - **Messages dans la mauvaise langue.** Définissez `KC_LANG` (voir Langues ci-dessous).

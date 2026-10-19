@@ -189,8 +189,11 @@ $ kc sync status            # 값 대신 상태와 이 기기의 값 지문 표�
   `security unlock-keychain ~/Library/Keychains/login.keychain-db` 를 실행하세요(맥 로그인
   암호를 묻습니다).
 - **Windows 에서 `no Credential Manager logon session` 이 나올 때.** SSH 키로
-  로그인한 세션에는 자격 증명 관리자가 없습니다. 데스크톱 세션에서 실행하거나
-  비밀번호로 SSH 접속하세요.
+  로그인한 세션에는 자격 증명 관리자가 없습니다. 데스크톱 세션에서 실행하거나,
+  Windows 비밀번호로 시작한 프로세스(예: PowerShell 의 `Start-Process -Credential`)
+  에서 실행하세요. 이 프로세스는 완전한 로그온 세션을 받습니다. SSH 를 비밀번호로
+  접속하는 방법은 확실하지 않습니다. Microsoft 계정이면 비밀번호가 맞아도 Windows 가
+  거부할 수 있습니다.
 - **Linux 에서 키체인을 쓸 수 없을 때.** gnome-keyring 같은 Secret Service 를
   실행하고 잠금을 푸세요. 무엇이 빠졌는지는 `kc doctor` 가 알려 줍니다.
 - **메시지가 원하지 않는 언어로 나올 때.** `KC_LANG` 을 지정하세요(아래 언어

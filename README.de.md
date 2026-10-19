@@ -191,7 +191,10 @@ blockiert ist. Siehe die [Sicherheitsgrenzen](docs/SECURITY.md).
   dem Anmeldepasswort des Mac).
 - **Windows: `no Credential Manager logon session`.** In einer SSH-Sitzung, die sich
   mit einem Schlüssel angemeldet hat, gibt es keine Anmeldeinformationsverwaltung. Führe kc
-  in einer Desktop-Sitzung aus oder verbinde dich per SSH mit einem Passwort.
+  in einer Desktop-Sitzung aus oder in einem Prozess, der mit deinem Windows-Passwort
+  gestartet wurde (zum Beispiel mit `Start-Process -Credential` in PowerShell); er bekommt
+  eine vollständige Anmeldesitzung. Eine SSH-Anmeldung mit Passwort ist keine verlässliche
+  Lösung: Bei einem Microsoft-Konto kann Windows sie ablehnen, auch wenn das Passwort stimmt.
 - **Linux: Der Schlüsselbund ist nicht verfügbar.** Starte einen Secret Service (zum Beispiel
   gnome-keyring) und entsperre ihn; `kc doctor` sagt, welcher Teil fehlt.
 - **Meldungen in der falschen Sprache.** Setze `KC_LANG` (siehe Sprachen unten).

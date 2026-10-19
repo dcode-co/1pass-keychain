@@ -188,7 +188,10 @@ trabajo pendiente o bloqueado. Consulta los [límites de seguridad](docs/SECURIT
   en la sesión SSH (pide la contraseña de inicio de sesión del Mac).
 - **Windows: `no Credential Manager logon session`.** El Administrador de credenciales
   no existe en una sesión SSH iniciada con una clave. Ejecuta kc desde una
-  sesión de escritorio o conéctate por SSH con una contraseña.
+  sesión de escritorio o desde un proceso iniciado con tu contraseña de Windows
+  (por ejemplo, `Start-Process -Credential` en PowerShell), que obtiene una sesión de
+  inicio completa. Conectarse por SSH con contraseña no es una solución fiable: Windows
+  puede rechazarla en una cuenta Microsoft aunque la contraseña sea correcta.
 - **Linux: el llavero no está disponible.** Inicia un Secret Service (por ejemplo
   gnome-keyring) y desbloquéalo; `kc doctor` indica qué parte falta.
 - **Mensajes en el idioma equivocado.** Define `KC_LANG` (consulta Idiomas más abajo).
