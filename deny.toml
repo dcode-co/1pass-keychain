@@ -4,6 +4,13 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
+ignore = [
+  # zbus_names, zvariant and zvariant_derive are unmaintained; zbus 6 absorbs them. We get
+  # them through zbus 5 (kc-store, secret-service) and no zbus 6 path is available yet.
+  { id = "RUSTSEC-2026-0370", reason = "zbus_names via zbus 5; drop when moving to zbus 6" },
+  { id = "RUSTSEC-2026-0371", reason = "zvariant via zbus 5; drop when moving to zbus 6" },
+  { id = "RUSTSEC-2026-0372", reason = "zvariant_derive via zbus 5; drop when moving to zbus 6" },
+]
 
 [licenses]
 version = 2
