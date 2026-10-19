@@ -41,7 +41,11 @@ publish() {
   if [ "$dry" = --dry-run ]; then
     (cd "$dir" && npm publish --access public --dry-run)
   else
-    (cd "$dir" && npm publish --access public)
+    # The loop below feeds the package list on stdin; give npm the terminal back so
+    # it can run the 2FA (OTP or web/passkey) challenge. Without one (CI), use /dev/null.
+    local tty=/dev/null
+    if { : </dev/tty; } 2>/dev/null; then tty=/dev/tty; fi
+    (cd "$dir" && npm publish --access public <"$tty")
   fi
 }
 
