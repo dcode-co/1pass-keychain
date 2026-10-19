@@ -76,7 +76,7 @@ de escritorio suelen tenerlo; un servidor sin interfaz gráfica o una instalaci�
 **Windows**: el Administrador de credenciales no está disponible en una sesión SSH iniciada
 con una clave, así que ejecuta kc desde una sesión de escritorio.
 
-Para compilar desde el código fuente, usa Rust 1.88 o posterior:
+Para compilar desde el código fuente, usa Rust 1.89 o posterior:
 
 ```console
 $ cargo install --locked --git https://github.com/dcode-co/1pass-keychain kc-cli

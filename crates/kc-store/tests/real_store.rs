@@ -1163,8 +1163,20 @@ sleep 0.3
 GK=$(pgrep -f "control-directory=$ROOT/ctl" | head -1)
 [ -n "$GK" ] || { echo "no private keyring daemon" >&2; exit 92; }
 echo "isolated suite: private bus $DBUS_SESSION_BUS_ADDRESS, keyring daemon pid $GK"
-KC_TEST_KEYRING_PID="$GK" "$EXE" --nocapture --test-threads=4 --skip isolated_real_store_suite
+STRESS=stress_short_lived_processes_keep_the_keyring_daemon_alive
+KC_TEST_KEYRING_PID="$GK" "$EXE" --nocapture --test-threads=4 --skip isolated_real_store_suite \
+  --skip "$STRESS"
 STATUS=$?
+# The stress test watches the bus for property calls, so it runs alone: the other tests use
+# secret-tool, whose libsecret client reads the Service's properties (GetAll) as it starts.
+if "$EXE" --list --exact "$STRESS" | grep -qx "$STRESS: test"; then
+  KC_TEST_KEYRING_PID="$GK" "$EXE" --nocapture --exact "$STRESS"
+  STRESS_STATUS=$?
+else
+  echo "no test named $STRESS: the stress test would silently not run" >&2
+  STRESS_STATUS=98
+fi
+[ "$STATUS" -eq 0 ] && STATUS=$STRESS_STATUS
 if ! kill -0 "$GK" 2>/dev/null; then
   echo "THE KEYRING DAEMON DIED during the isolated real-store suite" >&2
   STATUS=97
@@ -1237,9 +1249,10 @@ fn stress_short_lived_processes_keep_the_keyring_daemon_alive() {
 
     // Proof that kc issues no D-Bus property calls on any path: watch the private bus for
     // `org.freedesktop.DBus.Properties` method calls throughout the churn below. Started after the
-    // foreign item is seeded, so secret-tool's own traffic isn't counted; the only caller left is
-    // kc. A property read orphaned by an exiting kc process is what crashes gnome-keyring, so the
-    // fix is to make none at all.
+    // foreign item is seeded, so secret-tool's own traffic isn't counted, and the isolated suite
+    // runs this test on its own, so no other test's secret-tool is either: the only caller left
+    // is kc. A property read orphaned by an exiting kc process is what crashes gnome-keyring, so
+    // the fix is to make none at all.
     let monitor_log = ns.dir.path().join("properties-monitor.log");
     let mut monitor = have("dbus-monitor").then(|| {
         let out = std::fs::File::create(&monitor_log).unwrap();
@@ -1347,26 +1360,22 @@ fn stress_short_lived_processes_keep_the_keyring_daemon_alive() {
         let _ = monitor.kill();
         let _ = monitor.wait();
         let log = std::fs::read_to_string(&monitor_log).unwrap_or_default();
-        // kc's own code makes method calls only (OpenSession, ReadAlias, SearchItems, CreateItem,
-        // SetSecret, GetSecret, Delete). The crash vectors it used to issue were single-property
-        // reads — `Collection.Locked`/`Label` and `Item.Attributes`, i.e. `Properties.Get`. None
-        // of those must come back.
+        // kc makes method calls only (OpenSession, ReadAlias, SearchItems, CreateItem, SetSecret,
+        // GetSecret, Delete, Dismiss) and builds no D-Bus proxy, so nothing reads a property
+        // behind its back either. The crash vectors it used to issue were single-property reads
+        // (`Collection.Locked`/`Label`, `Item.Attributes`, i.e. `Properties.Get`), and the
+        // client library it used to go through fired a background `GetAll` from its property
+        // cache. Neither must come back.
         let single_gets = log.lines().filter(|l| l.ends_with("member=Get")).count();
         assert_eq!(
             single_gets, 0,
             "kc issued {single_gets} Properties.Get call(s) (the gnome-keyring crash vector):\n{log}"
         );
-        // Residual, not from kc's code: the secret-service crate builds its `Service` proxy with
-        // zbus CacheProperties::Lazily, whose property-cache task fires a background `GetAll`.
-        // kc never reads a property; removing these needs the crate built with CacheProperties::No
-        // (a one-line change, best vendored/upstreamed) or a raw client. Reported, not asserted.
         let getalls = log.lines().filter(|l| l.ends_with("member=GetAll")).count();
-        if getalls > 0 {
-            eprintln!(
-                "note: {getalls} background GetAll(s) from the secret-service crate's cached \
-                 Service proxy (CacheProperties::Lazily); see the follow-up report"
-            );
-        }
+        assert_eq!(
+            getalls, 0,
+            "kc issued {getalls} Properties.GetAll call(s):\n{log}"
+        );
     }
 
     if foreign_seeded {

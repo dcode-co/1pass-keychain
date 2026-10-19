@@ -3,9 +3,7 @@ name = "kc-store"
 description = "1pass keychain: OS keychain adapter (macOS Keychain, Linux Secret Service, Windows Credential Manager) and local index"
 version.workspace = true
 edition.workspace = true
-# The keyring store crates (zbus-secret-service-keyring-store, windows-native-keyring-store)
-# need Rust 1.88, so this crate can't honour the workspace's 1.85.
-rust-version = "1.88"
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
@@ -42,12 +40,17 @@ security-framework = "3"
 windows-native-keyring-store = "1"
 regex = "1"
 
-# Linux / BSD: the Secret Service, driven directly. The keyring store crates for it
-# (zbus-/dbus-secret-service-keyring-store) unlock locked items by themselves, which shows a
-# password prompt; kc must never do that, so it uses the client library underneath them.
+# Linux / BSD: the Secret Service, driven directly with D-Bus method calls. The keyring store
+# crates for it (zbus-/dbus-secret-service-keyring-store) unlock locked items by themselves,
+# which shows a password prompt, and client libraries read D-Bus properties, which can crash
+# gnome-keyring; kc must do neither. The crypto crates implement the encrypted session
+# (`dh-ietf1024-sha256-aes128-cbc-pkcs7`).
 [target.'cfg(all(unix, not(any(target_os = "macos", target_os = "ios", target_os = "android"))))'.dependencies]
-secret-service = { version = "5", features = ["crypto-rust"] }
-zbus = "5"
+zbus = { version = "6", default-features = false, features = ["default-rt"] }
+aes = { version = "0.8", features = ["zeroize"] }
+cbc = { version = "0.1", features = ["block-padding", "alloc", "zeroize"] }
+crypto-bigint = { version = "0.7", default-features = false, features = ["zeroize"] }
+hkdf = "0.12"
 
 [dev-dependencies]
 tempfile = "3"

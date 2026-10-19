@@ -29,11 +29,11 @@
 //!   credentials `<account>@<namespace>` (upper case escaped, since target names are
 //!   case-insensitive), persistence Local. Credential blobs are limited to 2560 bytes, so large
 //!   values are chunked.
-//! - **Linux / BSD**: the Secret Service (gnome-keyring, KeePassXC) over D-Bus, through the
-//!   `secret-service` client directly. The keyring store crates for the Secret Service unlock
-//!   locked items by themselves (a password prompt) and can't be told not to, so kc uses only
-//!   calls that cannot prompt: a locked keyring is [`StoreError::Locked`], a missing bus or
-//!   service is [`StoreError::Unavailable`], each with remediation. If
+//! - **Linux / BSD**: the Secret Service (gnome-keyring, KeePassXC) over D-Bus, with zbus method
+//!   calls and secrets encrypted in a Diffie-Hellman session. The keyring store crates for the
+//!   Secret Service unlock locked items by themselves (a password prompt) and can't be told not
+//!   to, so kc uses only calls that cannot prompt: a locked keyring is [`StoreError::Locked`], a
+//!   missing bus or service is [`StoreError::Unavailable`], each with remediation. If
 //!   `DBUS_SESSION_BUS_ADDRESS` is unset, `$XDG_RUNTIME_DIR/bus` is used (in-process; the
 //!   environment is not modified), which makes SSH sessions work.
 //!

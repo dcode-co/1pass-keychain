@@ -75,7 +75,7 @@ $ kc doctor
 **Windows**：以金鑰登入的 SSH 工作階段無法使用認證管理員，
 因此請在桌面工作階段中執行 kc。
 
-若要改從原始碼建置，請使用 Rust 1.88 或更新版本：
+若要改從原始碼建置，請使用 Rust 1.89 或更新版本：
 
 ```console
 $ cargo install --locked --git https://github.com/dcode-co/1pass-keychain kc-cli

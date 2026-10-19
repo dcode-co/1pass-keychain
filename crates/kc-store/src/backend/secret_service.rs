@@ -3,17 +3,17 @@
 //! **Never prompts, by construction.** The keyring store crates for the Secret Service unlock
 //! locked items and collections on their own, which shows a password dialog (or hangs
 //! without a display), and they can't be configured not to. So this backend talks to the
-//! service directly and only uses calls that cannot prompt:
+//! service directly, with D-Bus method calls that cannot prompt:
 //!
-//! - `SearchItems`, `GetSecret`, `SetSecret` and property reads, through the `secret-service`
-//!   crate over an encrypted (Diffie-Hellman) session. On a locked item they fail; they never
-//!   unlock.
-//! - `CreateItem` and `Item.Delete` as raw D-Bus calls. On a locked collection they answer with
-//!   a prompt object; kc dismisses it without running it and reports [`StoreError::Locked`].
-//!   `CreateItem` carries an empty placeholder (over a plain session, so nothing secret
-//!   travels unencrypted); the real value follows with `SetSecret`.
+//! - `SearchItems`, `GetSecret` and `SetSecret`, with secrets encrypted in a Diffie-Hellman
+//!   session ([`session`]). On a locked item they fail; they never unlock.
+//! - `CreateItem` and `Item.Delete`. On a locked collection they answer with a prompt object;
+//!   kc dismisses it without running it and reports [`StoreError::Locked`]. `CreateItem`
+//!   carries an empty placeholder (over a plain session, so nothing secret travels
+//!   unencrypted); the real value follows with `SetSecret`.
 //!
-//! `Unlock` and `Prompt.Prompt` are never called.
+//! `Unlock` and `Prompt.Prompt` are never called, and no D-Bus property is ever read (see
+//! [`Inner::default_collection`]).
 //!
 //! Calls carry no D-Bus-level timeout on purpose: a call that took too long may still be
 //! carried out by the service, so the worker thread waits for the real answer. The caller is
@@ -27,16 +27,17 @@
 //! Items carry the attributes `service` (the namespace) and `username` (the account), the
 //! same layout keyring-rs uses, and the label `kc <account> (<namespace>)`.
 
+mod session;
+
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::Arc;
 use std::time::Duration;
 
-use secret_service::EncryptionType;
-use secret_service::blocking::SecretService;
-use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
+use zbus::{OwnedObjectPath, OwnedVariant, Variant};
 use zeroize::Zeroizing;
 
+use self::session::{Exchange, SessionKey};
 use super::{Backend, ForeignItem, bounded, not_found};
 use crate::config::StoreConfig;
 use crate::error::{Result, StoreError};
@@ -71,10 +72,11 @@ pub(crate) struct SecretServiceBackend {
 }
 
 struct Inner {
-    /// One connection, shared by the client below and the raw calls.
-    conn: zbus::blocking::Connection,
-    /// Client with an encrypted session, for everything that carries a secret.
-    ss: Mutex<SecretService<'static>>,
+    /// One connection for every call.
+    conn: zbus::Connection,
+    /// The encrypted session everything that carries a secret goes through, and its key.
+    session: OwnedObjectPath,
+    key: SessionKey,
     /// A plain session, used only for the empty `CreateItem` placeholder.
     plain_session: OwnedObjectPath,
     namespace: String,
@@ -88,16 +90,17 @@ impl SecretServiceBackend {
         let namespace = cfg.namespace.clone();
         let inner = bounded(timeout, "connect", TIMEOUT_HINT, move || {
             check_bus_address()?;
-            let conn = zbus::blocking::connection::Builder::session()
-                .and_then(|builder| builder.build())
+            // Built inside `zbus::block_on` on this worker thread. Once that returns, zbus's
+            // helper thread runs the connection, so the calls later workers make still complete.
+            let conn = zbus::block_on(zbus::Connection::session())
                 .map_err(|err| bus_connect_error(&err, timeout))?;
-            let ss = SecretService::connect_with_existing(EncryptionType::Dh, conn.clone())
-                .map_err(|err| ss_error(err, "connect", timeout))?;
+            let (session, key) = open_encrypted_session(&conn, timeout)?;
             let plain_session =
                 open_plain_session(&conn).map_err(|err| zbus_error(&err, "connect", timeout))?;
             let inner = Inner {
                 conn,
-                ss: Mutex::new(ss),
+                session,
+                key,
                 plain_session,
                 namespace,
                 timeout,
@@ -116,13 +119,14 @@ impl SecretServiceBackend {
         let inner = Arc::clone(&self.inner);
         let result = bounded(self.inner.timeout, op, TIMEOUT_HINT, move || f(&inner));
         if matches!(result, Err(StoreError::Timeout { .. })) {
-            // A timed-out call keeps running on its worker thread (see [`super::bounded`]),
-            // possibly mid `Properties.Get` or method call. Keep this process, and so its D-Bus
+            // A timed-out call keeps running on its worker thread (see [`super::bounded`]), and
+            // the service may still carry it out. Keep this process, and so its D-Bus
             // connection, alive until every such call has actually come back: a bounded wait is
             // not enough, because a request still in flight when the process exits closes the
-            // connection under the daemon, and an orphaned property read crashes gnome-keyring
-            // (see [`Inner::default_collection`]). This mirrors [`crate::lock`]'s keeper, which
-            // already holds the cross-process locks until the same calls settle.
+            // connection under the daemon (which gnome-keyring doesn't survive for property
+            // reads; kc makes none, see [`Inner::default_collection`]). This mirrors
+            // [`crate::lock`]'s keeper, which already holds the cross-process locks until the
+            // same calls settle.
             super::drain_abandoned_calls();
         }
         result
@@ -261,10 +265,6 @@ impl Backend for SecretServiceBackend {
 }
 
 impl Inner {
-    fn ss(&self) -> MutexGuard<'_, SecretService<'static>> {
-        self.ss.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
     fn attributes<'a>(&'a self, account: &'a str) -> HashMap<&'a str, &'a str> {
         HashMap::from([("service", self.namespace.as_str()), ("username", account)])
     }
@@ -276,21 +276,25 @@ impl Inner {
         attributes: &HashMap<&str, &str>,
         op: &'static str,
     ) -> Result<Vec<OwnedObjectPath>> {
-        let ss = self.ss();
-        let found = ss
-            .search_items(attributes.clone())
-            .map_err(|err| ss_error(err, op, self.timeout))?;
-        if !found.locked.is_empty() {
+        let reply = method_call(
+            &self.conn,
+            SERVICE_PATH,
+            SERVICE_IFACE,
+            "SearchItems",
+            attributes,
+        )
+        .map_err(|err| zbus_error(&err, op, self.timeout))?;
+        let (unlocked, in_locked): (Vec<OwnedObjectPath>, Vec<OwnedObjectPath>) = reply
+            .body()
+            .deserialize()
+            .map_err(|err| zbus_error(&err, op, self.timeout))?;
+        if !in_locked.is_empty() {
             return Err(locked(format!(
                 "{} matching item(s) are in a locked keyring",
-                found.locked.len()
+                in_locked.len()
             )));
         }
-        Ok(found
-            .unlocked
-            .iter()
-            .map(|item| item.item_path.clone())
-            .collect())
+        Ok(unlocked)
     }
 
     /// The item holding `account`, if any.
@@ -329,23 +333,56 @@ impl Inner {
         }
     }
 
+    /// `Item.GetSecret` in the encrypted session, decrypted.
     fn read_secret(&self, path: &OwnedObjectPath, op: &'static str) -> Result<Zeroizing<Vec<u8>>> {
-        let ss = self.ss();
-        let item = ss
-            .get_item_by_path(path.clone())
-            .map_err(|err| ss_error(err, op, self.timeout))?;
-        item.get_secret()
-            .map(Zeroizing::new)
-            .map_err(|err| ss_error(err, op, self.timeout))
+        let reply = method_call(
+            &self.conn,
+            path.as_str(),
+            ITEM_IFACE,
+            "GetSecret",
+            &self.session,
+        )
+        .map_err(|err| zbus_error(&err, op, self.timeout))?;
+        // One argument, the secret struct: (session, parameters, value, content type).
+        let ((session, parameters, value, _content_type),): ((
+            OwnedObjectPath,
+            Vec<u8>,
+            Vec<u8>,
+            String,
+        ),) = reply
+            .body()
+            .deserialize()
+            .map_err(|err| zbus_error(&err, op, self.timeout))?;
+        // Only our session's key decrypts it; libsecret checks this as well.
+        if session != self.session {
+            return Err(StoreError::Backend {
+                op,
+                detail: format!(
+                    "the Secret Service answered GetSecret for another session ({})",
+                    session.as_str()
+                ),
+            });
+        }
+        self.key
+            .decrypt(&parameters, &value)
+            .map_err(|detail| StoreError::Backend {
+                op,
+                detail: detail.into(),
+            })
     }
 
+    /// `Item.SetSecret` in the encrypted session.
     fn write_secret(&self, path: &OwnedObjectPath, secret: &[u8], op: &'static str) -> Result<()> {
-        let ss = self.ss();
-        let item = ss
-            .get_item_by_path(path.clone())
-            .map_err(|err| ss_error(err, op, self.timeout))?;
-        item.set_secret(secret, CONTENT_TYPE)
-            .map_err(|err| change_error(classify_ss(&err), err.to_string(), op, self.timeout))
+        let (parameters, value) = self.key.encrypt(secret);
+        method_call(
+            &self.conn,
+            path.as_str(),
+            ITEM_IFACE,
+            "SetSecret",
+            &((&self.session, parameters, value, CONTENT_TYPE),),
+        )
+        .map_err(|err| change_error(classify_zbus(&err), err.to_string(), op, self.timeout))?;
+        Ok(())
     }
 
     /// The object path of the default collection, where new items go. Resolved with the
@@ -360,16 +397,14 @@ impl Inner {
     /// `SearchItems` locked list (see [`Inner::search`]) and writes get a prompt object from
     /// `CreateItem` that kc dismisses (see [`Inner::create`]).
     fn default_collection(&self, op: &'static str) -> Result<OwnedObjectPath> {
-        let reply = self
-            .conn
-            .call_method(
-                Some(SERVICE_NAME),
-                SERVICE_PATH,
-                Some(SERVICE_IFACE),
-                "ReadAlias",
-                &"default",
-            )
-            .map_err(|err| zbus_error(&err, op, self.timeout))?;
+        let reply = method_call(
+            &self.conn,
+            SERVICE_PATH,
+            SERVICE_IFACE,
+            "ReadAlias",
+            &"default",
+        )
+        .map_err(|err| zbus_error(&err, op, self.timeout))?;
         let path: OwnedObjectPath = reply
             .body()
             .deserialize()
@@ -387,14 +422,14 @@ impl Inner {
     fn create(&self, account: &str, secret: &[u8]) -> Result<()> {
         let collection = self.default_collection("write")?;
         let label = format!("kc {account} ({})", self.namespace);
-        let mut properties: HashMap<&str, Value<'_>> = HashMap::new();
+        let mut properties: HashMap<&str, Variant<'_>> = HashMap::new();
         properties.insert(
             "org.freedesktop.Secret.Item.Label",
-            Value::from(label.as_str()),
+            Variant::from(label.as_str()),
         );
         properties.insert(
             "org.freedesktop.Secret.Item.Attributes",
-            Value::from(self.attributes(account)),
+            Variant::from(self.attributes(account)),
         );
         // (session, parameters, value, content type) with an empty value.
         let placeholder = (
@@ -403,19 +438,14 @@ impl Inner {
             Vec::<u8>::new(),
             CONTENT_TYPE,
         );
-        let reply = self
-            .conn
-            .call_method(
-                Some(SERVICE_NAME),
-                collection.as_str(),
-                Some(COLLECTION_IFACE),
-                "CreateItem",
-                // Never replace: see `own_item`.
-                &(properties, placeholder, false),
-            )
-            .map_err(|err| {
-                change_error(classify_zbus(&err), err.to_string(), "write", self.timeout)
-            })?;
+        let reply = method_call(
+            &self.conn,
+            collection.as_str(),
+            COLLECTION_IFACE,
+            "CreateItem", // Never replace: see `own_item`.
+            &(properties, placeholder, false),
+        )
+        .map_err(|err| change_error(classify_zbus(&err), err.to_string(), "write", self.timeout))?;
         let (item, prompt): (OwnedObjectPath, OwnedObjectPath) = reply
             .body()
             .deserialize()
@@ -434,15 +464,7 @@ impl Inner {
 
     /// `Item.Delete`, without ever running the prompt it may return.
     fn delete_path(&self, path: &OwnedObjectPath, op: &'static str) -> Result<()> {
-        let reply = self
-            .conn
-            .call_method(
-                Some(SERVICE_NAME),
-                path.as_str(),
-                Some(ITEM_IFACE),
-                "Delete",
-                &(),
-            )
+        let reply = method_call(&self.conn, path.as_str(), ITEM_IFACE, "Delete", &())
             .map_err(|err| change_error(classify_zbus(&err), err.to_string(), op, self.timeout))?;
         let prompt: OwnedObjectPath = reply
             .body()
@@ -457,13 +479,7 @@ impl Inner {
 
     /// Withdraws a prompt object the service handed out. It was never shown.
     fn dismiss(&self, prompt: &OwnedObjectPath) {
-        let _ = self.conn.call_method(
-            Some(SERVICE_NAME),
-            prompt.as_str(),
-            Some(PROMPT_IFACE),
-            "Dismiss",
-            &(),
-        );
+        let _ = method_call(&self.conn, prompt.as_str(), PROMPT_IFACE, "Dismiss", &());
     }
 }
 
@@ -477,16 +493,65 @@ fn failed_creation(err: StoreError, cleanup: Result<()>) -> StoreError {
     }
 }
 
-fn open_plain_session(conn: &zbus::blocking::Connection) -> zbus::Result<OwnedObjectPath> {
-    let reply = conn.call_method(
-        Some(SERVICE_NAME),
+/// Calls `method` on the service and waits for the reply. zbus's API is async: the calling
+/// worker thread drives the call with `zbus::block_on`, and zbus's helper thread runs the
+/// connection in between calls (see `SecretServiceBackend::connect`).
+fn method_call<B>(
+    conn: &zbus::Connection,
+    path: &str,
+    interface: &str,
+    method: &str,
+    body: &B,
+) -> zbus::Result<zbus::Message>
+where
+    B: serde::Serialize + zbus::DynamicType,
+{
+    zbus::block_on(conn.call_method(Some(SERVICE_NAME), path, Some(interface), method, body))
+}
+
+fn open_plain_session(conn: &zbus::Connection) -> zbus::Result<OwnedObjectPath> {
+    let reply = method_call(
+        conn,
         SERVICE_PATH,
-        Some(SERVICE_IFACE),
+        SERVICE_IFACE,
         "OpenSession",
-        &("plain", Value::from("")),
+        &("plain", Variant::from("")),
     )?;
-    let (_output, session): (OwnedValue, OwnedObjectPath) = reply.body().deserialize()?;
+    let (_output, session): (OwnedVariant, OwnedObjectPath) = reply.body().deserialize()?;
     Ok(session)
+}
+
+/// Opens the encrypted session every secret travels through (see [`session`]).
+fn open_encrypted_session(
+    conn: &zbus::Connection,
+    timeout: Duration,
+) -> Result<(OwnedObjectPath, SessionKey)> {
+    let exchange = Exchange::new();
+    let reply = method_call(
+        conn,
+        SERVICE_PATH,
+        SERVICE_IFACE,
+        "OpenSession",
+        &(
+            session::ALGORITHM,
+            Variant::from(exchange.public_key().to_vec()),
+        ),
+    )
+    .map_err(|err| zbus_error(&err, "connect", timeout))?;
+    let (output, session): (OwnedVariant, OwnedObjectPath) = reply
+        .body()
+        .deserialize()
+        .map_err(|err| zbus_error(&err, "connect", timeout))?;
+    let refused = |detail: String| StoreError::Backend {
+        op: "connect",
+        detail,
+    };
+    let theirs = Vec::<u8>::try_from(output)
+        .map_err(|err| refused(format!("unexpected OpenSession answer ({err})")))?;
+    let key = exchange
+        .finish(&theirs)
+        .map_err(|detail| refused(detail.into()))?;
+    Ok((session, key))
 }
 
 fn locked(what: String) -> StoreError {
@@ -525,7 +590,6 @@ enum Class {
     Locked,
     NoBus,
     NoService,
-    NoDefault,
     Timeout,
     Denied,
     Other,
@@ -548,6 +612,10 @@ fn classify_zbus(err: &zbus::Error) -> Class {
         zbus::Error::InputOutput(_) | zbus::Error::Address(_) | zbus::Error::Handshake(_) => {
             Class::NoBus
         }
+        zbus::Error::Connection(io, _) if io.kind() == std::io::ErrorKind::TimedOut => {
+            Class::Timeout
+        }
+        zbus::Error::Connection(..) => Class::NoBus,
         zbus::Error::MethodError(name, _, _) => classify_name(name.as_str()),
         zbus::Error::FDO(fdo) => classify_fdo(fdo),
         _ => Class::Other,
@@ -568,18 +636,6 @@ fn classify_fdo(err: &zbus::fdo::Error) -> Class {
     }
 }
 
-fn classify_ss(err: &secret_service::Error) -> Class {
-    use secret_service::Error as S;
-    match err {
-        S::Locked | S::Prompt => Class::Locked,
-        S::Unavailable => Class::NoService,
-        S::NoResult => Class::NoDefault,
-        S::Zbus(inner) => classify_zbus(inner),
-        S::ZbusFdo(inner) => classify_fdo(inner),
-        _ => Class::Other,
-    }
-}
-
 fn to_store_error(class: Class, detail: String, op: &'static str, timeout: Duration) -> StoreError {
     match class {
         Class::Locked => locked(detail),
@@ -590,10 +646,6 @@ fn to_store_error(class: Class, detail: String, op: &'static str, timeout: Durat
         Class::NoService => StoreError::Unavailable {
             reason: format!("no Secret Service on the session bus ({detail})"),
             hint: NO_SERVICE_HINT.into(),
-        },
-        Class::NoDefault => StoreError::Unavailable {
-            reason: format!("the Secret Service has no default collection ({detail})"),
-            hint: NO_DEFAULT_HINT.into(),
         },
         Class::Timeout => StoreError::Timeout {
             op,
@@ -620,10 +672,6 @@ fn change_error(class: Class, detail: String, op: &'static str, timeout: Duratio
         },
         class => to_store_error(class, detail, op, timeout),
     }
-}
-
-fn ss_error(err: secret_service::Error, op: &'static str, timeout: Duration) -> StoreError {
-    to_store_error(classify_ss(&err), err.to_string(), op, timeout)
 }
 
 fn zbus_error(err: &zbus::Error, op: &'static str, timeout: Duration) -> StoreError {

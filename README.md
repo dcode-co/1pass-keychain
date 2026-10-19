@@ -76,7 +76,7 @@ installs usually have one; a headless server or a minimal install may not.
 **Windows**: Credential Manager isn't available in an SSH session that logged
 in with a key, so run kc from a desktop session.
 
-To build from source instead, use Rust 1.88 or newer:
+To build from source instead, use Rust 1.89 or newer:
 
 ```console
 $ cargo install --locked --git https://github.com/dcode-co/1pass-keychain kc-cli

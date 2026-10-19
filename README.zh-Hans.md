@@ -75,7 +75,7 @@ $ kc doctor
 **Windows**：在使用密钥登录的 SSH 会话中无法使用凭据管理器，
 因此请在桌面会话中运行 kc。
 
-如需从源码构建，请使用 Rust 1.88 或更高版本：
+如需从源码构建，请使用 Rust 1.89 或更高版本：
 
 ```console
 $ cargo install --locked --git https://github.com/dcode-co/1pass-keychain kc-cli

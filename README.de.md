@@ -76,7 +76,7 @@ haben meist einen; ein Headless-Server oder eine Minimalinstallation unter Umst�
 **Windows**: Die Anmeldeinformationsverwaltung ist in einer SSH-Sitzung, die per Schlüssel
 angemeldet wurde, nicht verfügbar; starte kc daher aus einer Desktop-Sitzung.
 
-Zum Bauen aus dem Quellcode brauchst du Rust 1.88 oder neuer:
+Zum Bauen aus dem Quellcode brauchst du Rust 1.89 oder neuer:
 
 ```console
 $ cargo install --locked --git https://github.com/dcode-co/1pass-keychain kc-cli

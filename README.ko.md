@@ -76,7 +76,7 @@ Developer ID 로 서명했고 Apple 공증을 받았습니다.
 **Windows**: SSH 키로 로그인한 세션에서는 자격 증명 관리자를 쓸 수 없습니다.
 데스크톱 세션에서 kc 를 실행하세요.
 
-소스에서 빌드하려면 Rust 1.88 이상이 필요합니다.
+소스에서 빌드하려면 Rust 1.89 이상이 필요합니다.
 
 ```console
 $ cargo install --locked --git https://github.com/dcode-co/1pass-keychain kc-cli

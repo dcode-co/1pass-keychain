@@ -76,7 +76,7 @@ de bureau en ont généralement un ; un serveur sans interface graphique ou une 
 **Windows** : le Gestionnaire d'identification n'est pas disponible dans une session SSH ouverte
 avec une clé ; lancez donc kc depuis une session de bureau.
 
-Pour compiler depuis les sources, utilisez Rust 1.88 ou une version plus récente :
+Pour compiler depuis les sources, utilisez Rust 1.89 ou une version plus récente :
 
 ```console
 $ cargo install --locked --git https://github.com/dcode-co/1pass-keychain kc-cli

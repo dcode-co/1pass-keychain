@@ -76,7 +76,7 @@ Developer ID で署名され、Apple の公証を受けています。
 **Windows**: 鍵でログインした SSH セッションでは資格情報マネージャーを使えないため、
 デスクトップセッションから kc を実行してください。
 
-ソースからビルドする場合は Rust 1.88 以降を使います。
+ソースからビルドする場合は Rust 1.89 以降を使います。
 
 ```console
 $ cargo install --locked --git https://github.com/dcode-co/1pass-keychain kc-cli

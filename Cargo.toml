@@ -5,7 +5,7 @@ members = ["crates/kc-wire", "crates/kc-proto", "crates/kc-store", "crates/kc-re
 [workspace.package]
 version = "0.3.4"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.89"
 license = "MIT"
 repository = "https://github.com/dcode-co/1pass-keychain"
 homepage = "https://github.com/dcode-co/1pass-keychain"
