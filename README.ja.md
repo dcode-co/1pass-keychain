@@ -187,7 +187,10 @@ $ kc sync status            # 値ではなく状態とこのデバイスの値�
   (Mac のログインパスワードを求められます)。
 - **Windows: `no Credential Manager logon session`。** 鍵でログインした SSH
   セッションには資格情報マネージャーがありません。デスクトップセッションから
-  kc を実行するか、パスワードで SSH 接続してください。
+  kc を実行するか、Windows のパスワードで起動したプロセス (たとえば PowerShell の
+  `Start-Process -Credential`) から実行してください。このプロセスは完全なログオン
+  セッションを持ちます。パスワードで SSH 接続する方法は確実ではありません。
+  Microsoft アカウントでは、パスワードが正しくても Windows が拒否することがあります。
 - **Linux: キーチェーンが使えない。** Secret Service (gnome-keyring など) を起動して
   ロックを解除してください。何が足りないかは `kc doctor` が示します。
 - **メッセージが意図しない言語で表示される。** `KC_LANG` を設定してください (下の「言語」を参照)。

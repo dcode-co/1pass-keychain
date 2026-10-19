@@ -179,7 +179,9 @@ Touch ID（或系统密码）、Windows Hello 或 polkit 在本机确认。加�
   因此无法显示钥匙串提示。请在 Mac 本机的终端中运行 kc，或先在 SSH 会话中运行
   `security unlock-keychain ~/Library/Keychains/login.keychain-db`（它会要求输入 Mac 的登录密码）。
 - **Windows：`no Credential Manager logon session`。** 用密钥登录的 SSH 会话中
-  没有凭据管理器。请在桌面会话中运行 kc，或用密码通过 SSH 连接。
+  没有凭据管理器。请在桌面会话中运行 kc，或在用 Windows 密码启动的进程中运行
+  （例如 PowerShell 的 `Start-Process -Credential`），这样的进程有完整的登录会话。
+  改用密码登录 SSH 并不可靠：对于 Microsoft 账户，即使密码正确，Windows 也可能拒绝。
 - **Linux：钥匙串不可用。** 启动 Secret Service（例如 gnome-keyring）并解锁；
   `kc doctor` 会指出缺少哪一部分。
 - **消息语言不对。** 设置 `KC_LANG`（见下方"语言"）。当 stdout 和 stderr

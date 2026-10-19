@@ -187,7 +187,10 @@ work remains. See [the security limits](docs/SECURITY.md).
   session (it asks for the Mac's login password).
 - **Windows: `no Credential Manager logon session`.** Credential Manager
   doesn't exist in an SSH session that logged in with a key. Run kc from a
-  desktop session, or connect over SSH with a password.
+  desktop session, or from a process started with your Windows password (for
+  example PowerShell's `Start-Process -Credential`), which gets a full logon
+  session. Logging in to SSH with a password instead isn't a reliable fix:
+  Windows can refuse it for a Microsoft account even when the password is right.
 - **Linux: the keychain is unavailable.** Start a Secret Service (for example
   gnome-keyring) and unlock it; `kc doctor` says which part is missing.
 - **Messages in the wrong language.** Set `KC_LANG` (see Languages below).

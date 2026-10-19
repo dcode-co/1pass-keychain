@@ -481,7 +481,8 @@ mod sys {
     pub(super) const TIMEOUT_HINT: &str = "Windows Credential Manager did not answer; try again";
     const NO_SESSION_HINT: &str = "Credential Manager isn't available in this logon session \
         (ERROR_NO_SUCH_LOGON_SESSION, typical for OpenSSH key authentication). Run kc from an \
-        interactive desktop session, or connect over SSH with password authentication";
+        interactive desktop session, or from a process started with your Windows password \
+        (for example PowerShell's Start-Process -Credential)";
     const ACCESS_DENIED_HINT: &str = "Windows refused access to the credential. Run kc as the \
         user who owns it, outside any sandbox or policy that restricts Credential Manager";
     /// ERROR_ACCESS_DENIED
